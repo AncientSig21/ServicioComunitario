@@ -171,7 +171,7 @@ export const BookPages = () => {
 
   // Función para obtener el título según la categoría
   const getPageTitle = () => {
-    if (!selectedCategoria) return 'Documentos y Anuncios';
+    if (!selectedCategoria) return 'Foro';
     
     const categoriaTitles: { [key: string]: string } = {
       'gestion-unidades': 'Gestión de Unidades',
@@ -183,7 +183,7 @@ export const BookPages = () => {
       'comunidad': 'Comunidad y Directorio'
     };
     
-    return categoriaTitles[selectedCategoria] || 'Documentos y Anuncios';
+    return categoriaTitles[selectedCategoria] || 'Foro';
   };
 
 

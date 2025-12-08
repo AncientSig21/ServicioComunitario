@@ -60,7 +60,7 @@ export const HomePage = () => {
 				</div>
 			) : (
 				<BookCarousel
-					title="Documentos y Anuncios Recientes"
+					title="Anuncios y Eventos"
 					books={books}
 					noBooksMessage="No hay documentos disponibles en este momento"
 				/>

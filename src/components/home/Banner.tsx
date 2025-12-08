@@ -25,7 +25,7 @@ export const Banner = () => {
 					to='/libros'
 					className='bg-gray-900 hover:bg-gray-950 text-white font-semibold py-3 px-6 rounded-lg shadow-lg transition duration-300 ease-in-out'
 				>
-					Ver Documentos y Anuncios
+					Ver Foro
 				</Link>
 			</div>
 		</div>

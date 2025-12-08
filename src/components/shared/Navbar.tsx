@@ -346,8 +346,8 @@ export const Navbar = () => {
 									<div className="space-y-1 mb-3">
 										<p className='font-semibold text-gray-700 text-sm'>Nombre: <span className='font-normal text-gray-900'>{user.nombre}</span></p>
 										<p className='font-semibold text-gray-700 text-sm'>Email: <span className='font-normal break-words text-gray-900'>{user.correo}</span></p>
-									{user.escuela && (
-											<p className='font-semibold text-gray-700 text-sm'>Escuela: <span className='font-normal text-gray-900'>{user.escuela}</span></p>
+									{user.numeroApartamento && (
+											<p className='font-semibold text-gray-700 text-sm'>Número de Casa: <span className='font-normal text-gray-900'>{user.numeroApartamento}</span></p>
 									)}
 										{user.rol && (
 											<p className='font-semibold text-gray-700 text-sm'>Rol: <span className='font-normal text-gray-900 capitalize'>{user.rol}</span></p>
@@ -428,7 +428,7 @@ export const Navbar = () => {
 					<div data-mobile-menu className="w-2/3 max-w-xs bg-white h-full shadow-lg p-6 flex flex-col gap-6 animate-slide-in">
 						<button onClick={() => setShowMobileMenu(false)} className="self-end text-2xl text-gray-500 mb-4">&times;</button>
 						<button onClick={() => handleNavLinkClick('/')} className={`${window.location.pathname === '/' ? 'text-secondary underline' : ''} text-lg font-semibold`}>Inicio</button>
-						<button onClick={() => handleNavLinkClick('/libros')} className={`${window.location.pathname === '/libros' ? 'text-secondary underline' : ''} text-lg font-semibold`}>Documentos y Anuncios</button>
+						<button onClick={() => handleNavLinkClick('/libros')} className={`${window.location.pathname === '/libros' ? 'text-secondary underline' : ''} text-lg font-semibold`}>Foro</button>
 						<button onClick={() => handleNavLinkClick('/tesis')} className={`${window.location.pathname === '/tesis' ? 'text-secondary underline' : ''} text-lg font-semibold`}>Servicios</button>
 					</div>
 				</div>

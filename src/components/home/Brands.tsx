@@ -2,28 +2,10 @@ import { Link } from 'react-router-dom';
 
 const servicios = [
   {
-    icon: '🏠',
-    label: 'Gestión de Unidades',
-    description: 'Administra tu apartamento',
-    categoria: 'gestion-unidades',
-  },
-  {
-    icon: '📄',
-    label: 'Documentos',
-    description: 'Normativas y reglamentos',
-    categoria: 'documentos',
-  },
-  {
     icon: '📢',
     label: 'Anuncios',
     description: 'Noticias y avisos',
     categoria: 'anuncios',
-  },
-  {
-    icon: '💰',
-    label: 'Pagos',
-    description: 'Estado de cuotas',
-    categoria: 'pagos',
   },
   {
     icon: '🔧',
@@ -38,10 +20,10 @@ const servicios = [
     categoria: 'reservas',
   },
   {
-    icon: '👥',
-    label: 'Comunidad',
-    description: 'Directorio de residentes',
-    categoria: 'comunidad',
+    icon: '💰',
+    label: 'Pagos',
+    description: 'Estado de cuotas',
+    categoria: 'pagos',
   },
 ];
 
@@ -55,10 +37,21 @@ export const Brands = () => {
       </p>
 
       <div className="flex flex-wrap justify-center gap-6 mt-8 max-w-full">
-        {servicios.map((servicio, index) => (
+        {servicios.map((servicio, index) => {
+          // Rutas especiales para cada servicio
+          const routeMap: { [key: string]: string } = {
+            'anuncios': '/anuncios',
+            'mantenimiento': '/mantenimiento',
+            'reservas': '/reservas',
+            'pagos': '/pagos',
+          };
+          
+          const route = routeMap[servicio.categoria] || `/libros?categoria=${encodeURIComponent(servicio.categoria)}`;
+          
+          return (
           <Link
             key={index}
-            to={`/libros?categoria=${encodeURIComponent(servicio.categoria)}`}
+            to={route}
             className="w-32 flex flex-col items-center justify-center hover:scale-105 transition-transform p-4 bg-white rounded-lg shadow-md cursor-pointer"
           >
             <div className="text-4xl mb-2">{servicio.icon}</div>
@@ -69,7 +62,8 @@ export const Brands = () => {
               {servicio.description}
             </span>
           </Link>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

@@ -85,27 +85,27 @@ export default function AdminLayout() {
             >
               <span className="text-xl flex-shrink-0">{link.icon}</span>
               {!collapsed && <span className="truncate">{link.label}</span>}
-              {/* Notificaciones para la pestaña de reportes - COMENTADO */}
-              {/* {link.to === '/admin/reportes' && link.notis && !collapsed && (
+              {/* Contador de notificaciones para reportes */}
+              {link.to === '/admin/reportes' && link.notis && !collapsed && (
                 <span className="flex gap-1 ml-auto">
                   {link.notis.morosos > 0 && (
-                    <span 
-                      title="Usuarios morosos" 
+                    <span
+                      title="Usuarios morosos"
                       className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-red-500 border-2 border-white text-white text-xs font-bold"
                     >
                       {link.notis.morosos}
                     </span>
                   )}
                   {link.notis.pendientes > 0 && (
-                    <span 
-                      title="Pedidos por responder" 
+                    <span
+                      title="Pedidos por responder"
                       className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-yellow-400 border-2 border-white text-gray-800 text-xs font-bold"
                     >
                       {link.notis.pendientes}
                     </span>
                   )}
                 </span>
-              )} */}
+              )}
             </NavLink>
           ))}
         </nav>

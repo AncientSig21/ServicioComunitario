@@ -1,7 +1,7 @@
 // router/index.tsx
 import { createBrowserRouter } from 'react-router-dom';
 import { RootLayout } from '../layouts/RootLayout';
-import { HomePage, BookPages, TesisPages } from '../pages';
+import { HomePage, BookPages, TesisPages, AnunciosPage, MantenimientoPage, ReservasPage, PagosPage } from '../pages';
 
 import { LoginPage } from '../pages/LoginPage';
 import { RegisterPage } from '../pages/RegisterPage';
@@ -26,6 +26,22 @@ export const router = createBrowserRouter([
       {
         path: 'tesis',
         element: <TesisPages />, // sin prop books
+      },
+      {
+        path: 'anuncios',
+        element: <AnunciosPage />,
+      },
+      {
+        path: 'mantenimiento',
+        element: <MantenimientoPage />,
+      },
+      {
+        path: 'reservas',
+        element: <ReservasPage />,
+      },
+      {
+        path: 'pagos',
+        element: <PagosPage />,
       },
       {
         path: 'login',

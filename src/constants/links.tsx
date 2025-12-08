@@ -10,7 +10,7 @@ export const navbarLinks = [
 	},
 	{
 		id: 2,
-		title: 'Documentos y Anuncios',
+		title: 'Foro',
 		href: '/libros',
 	},
 	{

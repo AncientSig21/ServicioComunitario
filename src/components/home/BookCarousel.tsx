@@ -234,10 +234,10 @@ export const BookCarousel = ({ title, books, noBooksMessage }: Props) => {
 						className="flex justify-center mt-8"
 					>
 						<Link
-							to="/libros"
+							to="/anuncios"
 							className="inline-flex items-center gap-2 px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors duration-200 font-medium"
 						>
-							Ver más documentos
+							Ver eventos
 							<svg width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="currentColor">
 								<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
 							</svg>

@@ -99,6 +99,7 @@ export interface User {
   nombre: string;
   correo: string;
   escuela: string | null;
+  numeroApartamento?: string;
   rol?: string;
   estado?: string | null; // Activo, Moroso, etc.
 }
@@ -248,6 +249,7 @@ export const authService = {
         nombre: nuevoUsuario.nombre,
         correo: nuevoUsuario.correo,
         escuela: nuevoUsuario.escuela,
+        numeroApartamento: nuevoUsuario.numeroApartamento,
         rol: nuevoUsuario.rol,
         estado: nuevoUsuario.estado
       };
@@ -445,6 +447,7 @@ export const authService = {
         nombre: nuevoUsuario.nombre,
         correo: nuevoUsuario.correo,
         escuela: nuevoUsuario.escuela,
+        numeroApartamento: nuevoUsuario.numeroApartamento,
         rol: nuevoUsuario.rol,
         estado: nuevoUsuario.estado
       };
@@ -486,6 +489,7 @@ export const authService = {
         nombre: usuario.nombre,
         correo: usuario.correo,
         escuela: usuario.escuela || null,
+        numeroApartamento: usuario.numeroApartamento || undefined,
         rol: usuario.rol || 'Usuario',
         estado: usuario.estado || 'Activo'
       };
@@ -570,6 +574,7 @@ export const authService = {
         nombre: usuario.nombre,
         correo: usuario.correo,
         escuela: usuario.escuela || null,
+        numeroApartamento: usuario.numeroApartamento || undefined,
         rol: usuario.rol || 'Usuario',
         estado: usuario.estado || 'Activo'
       };
