@@ -1,70 +1,35 @@
-import { useEffect, useState } from 'react';
 import { Brands } from '../components/home/Brands';
 import { FeatureGrid } from '../components/home/FeatureGrid';
-import { BookCarousel } from '../components/home/BookCarousel';
-import { fetchBooks } from '../services/bookService';
-import { PreparedBook } from '../interfaces';
 
 
 export const HomePage = () => {
-	const [books, setBooks] = useState<PreparedBook[]>([]);
-	const [loading, setLoading] = useState(true);
-	const [error, setError] = useState<string | null>(null);
-	
-
-	useEffect(() => {
-		const loadBooks = async () => {
-			try {
-				setLoading(true);
-				setError(null);
-				const data = await fetchBooks();
-				setBooks(data);
-			} catch (err: any) {
-				console.error('Error al cargar documentos:', err);
-				if (err.message.includes('Supabase no está configurado')) {
-					setError('Error de configuración: La aplicación no puede conectarse a la base de datos');
-				} else if (err.message.includes('base de datos')) {
-					setError('Error de conexión: No se pudo cargar los documentos desde la base de datos');
-				} else {
-					setError('Error inesperado al cargar los documentos. Por favor, intenta de nuevo.');
-				}
-			} finally {
-				setLoading(false);
-			}
-		};
-		loadBooks();
-	}, []);
-
-
-
 	return (
 		<div>
 			<FeatureGrid />
 
 			<Brands />
-			{loading ? (
-				<div className="text-center py-8 sm:py-12">
-					<div className="animate-spin rounded-full h-10 w-10 sm:h-12 sm:w-12 border-b-2 border-blue-500 mx-auto mb-3 sm:mb-4"></div>
-					<p className="text-gray-500 text-base sm:text-lg">Cargando información...</p>
+
+			{/* Sección fija de Anuncios y Eventos */}
+			<section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 my-16 sm:my-24 lg:my-32">
+				<h2 className="text-2xl sm:text-3xl font-semibold text-center mb-6 sm:mb-8 md:text-4xl lg:text-5xl text-gray-800">
+					Anuncios y Eventos
+				</h2>
+				<div className="max-w-2xl mx-auto bg-white rounded-xl shadow-md border border-gray-200 p-6 sm:p-8">
+					<p className="text-sm uppercase tracking-wide text-blue-600 font-semibold mb-2 text-center">
+						Próximo evento
+					</p>
+					<h3 className="text-xl sm:text-2xl font-bold text-gray-900 text-center mb-3">
+						Presentación del Proyecto Administrativo
+					</h3>
+					<p className="text-center text-gray-600 mb-4">
+						15 de febrero de 2026
+					</p>
+					<p className="text-sm sm:text-base text-gray-700 text-center">
+						Este evento está orientado a presentar el sistema de información web para la gestión comunitaria
+						del Consejo Comunal de la Urbanización Ciudad Colonial.
+					</p>
 				</div>
-			) : error ? (
-				<div className="text-center py-8 sm:py-12">
-					<div className="text-red-500 text-4xl sm:text-6xl mb-3 sm:mb-4">📄</div>
-					<p className="text-red-500 text-base sm:text-lg mb-2">{error}</p>
-					<button 
-						onClick={() => window.location.reload()} 
-						className="mt-3 sm:mt-4 bg-blue-600 text-white px-3 sm:px-4 py-2 rounded hover:bg-blue-700 transition text-sm sm:text-base"
-					>
-						Reintentar
-					</button>
-				</div>
-			) : (
-				<BookCarousel
-					title="Anuncios y Eventos"
-					books={books}
-					noBooksMessage="No hay documentos disponibles en este momento"
-				/>
-			)}
+			</section>
 		</div>
 	);
 };

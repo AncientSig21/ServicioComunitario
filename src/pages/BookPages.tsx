@@ -1,505 +1,410 @@
 import { useEffect, useState } from 'react';
-import { AnimatePresence, motion } from 'framer-motion';
-import { PreparedBook } from '../interfaces';
-
-import { useLocation } from 'react-router-dom';
-import { CardBook } from '../components/products/CardBook';
-import { ReservationModal } from '../components/products/ReservationModal';
-import { Pagination } from '../components/shared/Pagination';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
-import { fetchBooks } from '../services/bookService';
-import { PDFViewer } from '../components/products/PDFViewer';
-import { PhysicalBookModal } from '../components/products/PhysicalBookModal';
 
-import { registerBookReservation } from '../services/bookService';
-import { supabase } from '../supabase/client';
-import { ScrollToTop } from '../components/shared/ScrollToTop';
-import { useReservationContext } from '../contexts/ReservationContext';
+interface ForumComment {
+  id: number;
+  topicId: number;
+  author: string;
+  content: string;
+  createdAt: string;
+}
 
+interface ForumTopic {
+  id: number;
+  categoryId: string;
+  title: string;
+  content: string;
+  author: string;
+  createdAt: string;
+}
+
+const FORUM_STORAGE_KEY = 'forum_topics_ciudad_colonial';
 
 export const BookPages = () => {
-  const { isAuthenticated, isConfigured, user } = useAuth();
-  const { triggerRefresh } = useReservationContext();
-
   const location = useLocation();
-
-  const [books, setBooks] = useState<PreparedBook[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [selectedBook, setSelectedBook] = useState<PreparedBook | null>(null);
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const [isPhysicalBookModalOpen, setIsPhysicalBookModalOpen] = useState(false);
-
-
-  const [reservationMessage, setReservationMessage] = useState<string | null>(null);
-  const [isReservationModalOpen, setIsReservationModalOpen] = useState(false);
-  const [selectedBookForReservation, setSelectedBookForReservation] = useState<PreparedBook | null>(null);
-  const [userActiveOrders, setUserActiveOrders] = useState<Set<number>>(new Set());
-
-  // Estados para paginación
-  const [currentPage, setCurrentPage] = useState(1);
-  const itemsPerPage = 10;
-
-  useEffect(() => {
-    const loadBooks = async () => {
-      try {
-        setLoading(true);
-        const data = await fetchBooks();
-        setBooks(data);
-      } catch (err: any) {
-        setError('Error al cargar los documentos');
-      } finally {
-        setLoading(false);
-      }
-    };
-    loadBooks();
-  }, []);
-
-  // Cargar órdenes activas del usuario
-  useEffect(() => {
-    const loadUserActiveOrders = async () => {
-      if (!isAuthenticated || !user) return;
-      
-      try {
-        const { data: ordenesActivas } = await supabase
-          .from('ordenes')
-          .select('libro_id')
-          .eq('usuario_id', user.id)
-          .in('estado', ['Pendiente de buscar', 'Prestado', 'Moroso']);
-        
-        if (ordenesActivas) {
-          const libroIds = new Set(ordenesActivas.map(orden => orden.libro_id).filter((id): id is number => id !== null));
-          setUserActiveOrders(libroIds);
-        }
-      } catch (error) {
-        console.error('Error al cargar órdenes activas:', error);
-      }
-    };
-    
-    loadUserActiveOrders();
-  }, [isAuthenticated, user]);
-
-
+  const navigate = useNavigate();
+  const { user } = useAuth();
 
   const [selectedCategoria, setSelectedCategoria] = useState<string | null>(null);
+  const [topics, setTopics] = useState<ForumTopic[]>([]);
+  const [comments, setComments] = useState<ForumComment[]>([]);
+  const [selectedTopicId, setSelectedTopicId] = useState<number | null>(null);
 
+  const [newTopicTitle, setNewTopicTitle] = useState('');
+  const [newTopicContent, setNewTopicContent] = useState('');
+  const [newCommentContent, setNewCommentContent] = useState('');
+
+  // Cargar datos desde localStorage al iniciar
   useEffect(() => {
-    // Leer parámetro de categoría de la URL
+    try {
+      const stored = localStorage.getItem(FORUM_STORAGE_KEY);
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        setTopics(parsed.topics || []);
+        setComments(parsed.comments || []);
+      }
+    } catch (error) {
+      console.warn('Error cargando foro desde localStorage:', error);
+    }
+  }, []);
+
+  // Guardar cambios en localStorage
+  const saveForumData = (updatedTopics: ForumTopic[], updatedComments: ForumComment[]) => {
+    setTopics(updatedTopics);
+    setComments(updatedComments);
+    try {
+      localStorage.setItem(
+        FORUM_STORAGE_KEY,
+        JSON.stringify({ topics: updatedTopics, comments: updatedComments })
+      );
+    } catch (error) {
+      console.warn('Error guardando foro en localStorage:', error);
+    }
+  };
+
+  // Leer categoría activa desde la URL
+  useEffect(() => {
     const searchParams = new URLSearchParams(location.search);
     const categoriaParam = searchParams.get('categoria');
-    
     if (categoriaParam) {
       setSelectedCategoria(categoriaParam);
     } else {
       setSelectedCategoria(null);
     }
+    setSelectedTopicId(null);
   }, [location.search]);
 
-  const searchParams = new URLSearchParams(location.search);
+  // Categorías visibles del foro comunitario
+  const forumCategories: { id: string; label: string; description: string }[] = [
+    { id: 'gestion-unidades', label: 'Gestión de Unidades', description: 'Dudas sobre apartamentos y unidades' },
+    { id: 'documentos', label: 'Documentos y Normas', description: 'Reglamentos, manuales y guías' },
+    { id: 'pagos', label: 'Pagos y Cuotas', description: 'Consultas sobre pagos y facturas' },
+    { id: 'mantenimiento', label: 'Mantenimiento', description: 'Reportes y solicitudes de mantenimiento' },
+    { id: 'reservas', label: 'Reservas', description: 'Uso de áreas y espacios comunes' },
+    { id: 'comunidad', label: 'Comunidad', description: 'Información y temas de residentes' },
+    { id: 'profesionales-disponibles', label: 'Profesionales Disponibles', description: 'Servicios ofrecidos por vecinos' },
+    { id: 'problemas-pagina', label: 'Problemas de la Página', description: 'Reportar fallos del portal' },
+  ];
 
-  // Función para normalizar textos (ignorar mayúsculas y tildes)
-  function normalize(str: string) {
-    return (str || '')
-      .toLowerCase()
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '') // Elimina tildes correctamente
-      .replace(/\s+/g, ' ')
-      .trim();
-  }
-
-  // Mostrar todos los documentos excepto los de tipo Tesis, Servicio Comunitario, Pasantía(s) y Proyecto de Investigacion
-  let filteredBooks = books.filter(
-    book =>
-      book.type !== 'Tesis' &&
-      book.type !== 'Servicio Comunitario' &&
-      book.type !== 'Pasantía' &&
-      book.type !== 'Pasantias' &&
-      book.type !== 'Proyecto de Investigacion'
-  );
-
-  // Filtrar por parámetro de búsqueda en la URL
-  const searchQuery = searchParams.get('search')?.trim() || '';
-  if (searchQuery) {
-    filteredBooks = filteredBooks.filter(book => {
-      const normalizedTitle = normalize(book.title);
-      const normalizedAuthor = normalize(book.authors || book.author || '');
-      const normalizedQuery = normalize(searchQuery);
-      return (
-        normalizedTitle.includes(normalizedQuery) ||
-        normalizedAuthor.includes(normalizedQuery)
-      );
-    });
-  }
-
-  // Filtrar por categoría seleccionada desde la URL
-  if (selectedCategoria) {
-    filteredBooks = filteredBooks.filter(book => {
-      // Usar el campo categoria si existe, o buscar en el título/sinopsis
-      const bookCategoria = (book as any).categoria || '';
-      const normalizedCategoria = normalize(selectedCategoria);
-      
-      // Mapeo de categorías a palabras clave
-      const categoriaKeywords: { [key: string]: string[] } = {
-        'gestion-unidades': ['unidad', 'apartamento', 'casa', 'propiedad', 'registro', 'titulo'],
-        'documentos': ['documento', 'normativa', 'reglamento', 'manual', 'guia', 'procedimiento'],
-        'anuncios': ['anuncio', 'noticia', 'aviso', 'comunicado', 'informacion'],
-        'pagos': ['pago', 'cuota', 'factura', 'cobro', 'financiero', 'mensualidad'],
-        'mantenimiento': ['mantenimiento', 'reparacion', 'servicio', 'solicitud', 'reporte'],
-        'reservas': ['reserva', 'espacio', 'comun', 'area', 'sala', 'salon'],
-        'comunidad': ['comunidad', 'directorio', 'residente', 'vecino', 'asamblea']
-      };
-      
-      const keywords = categoriaKeywords[normalizedCategoria] || [];
-      const bookText = normalize(`${book.title} ${book.sinopsis || ''} ${bookCategoria}`);
-      
-      return keywords.some(keyword => bookText.includes(keyword));
-    });
-  }
-
-
-  // Lógica de paginación
-  const totalItems = filteredBooks.length;
-  const totalPages = Math.ceil(totalItems / itemsPerPage);
-  const startIndex = (currentPage - 1) * itemsPerPage;
-  const endIndex = startIndex + itemsPerPage;
-  const currentBooks = filteredBooks.slice(startIndex, endIndex);
-
-  // Resetear a la primera página cuando cambian los filtros
-  useEffect(() => {
-    setCurrentPage(1);
-  }, [searchQuery, selectedCategoria]);
+  const handleCategoryClick = (categoriaId: string | null) => {
+    const params = new URLSearchParams(location.search);
+    if (categoriaId) {
+      params.set('categoria', categoriaId);
+    } else {
+      params.delete('categoria');
+    }
+    navigate({ pathname: '/libros', search: params.toString() }, { replace: false });
+  };
 
   // Función para obtener el título según la categoría
   const getPageTitle = () => {
-    if (!selectedCategoria) return 'Foro';
-    
+    if (!selectedCategoria) return 'Foro Comunitario';
+
     const categoriaTitles: { [key: string]: string } = {
       'gestion-unidades': 'Gestión de Unidades',
       'documentos': 'Documentos y Normativas',
-      'anuncios': 'Anuncios y Noticias',
       'pagos': 'Pagos y Facturación',
       'mantenimiento': 'Mantenimiento y Servicios',
       'reservas': 'Reservas de Espacios',
-      'comunidad': 'Comunidad y Directorio'
+      'comunidad': 'Comunidad y Directorio',
+      'profesionales-disponibles': 'Profesionales Disponibles',
+      'problemas-pagina': 'Problemas de la Página',
     };
-    
-    return categoriaTitles[selectedCategoria] || 'Foro';
+
+    return categoriaTitles[selectedCategoria] || 'Foro Comunitario';
   };
 
+  const selectedCategoryInfo = selectedCategoria
+    ? forumCategories.find(c => c.id === selectedCategoria)
+    : null;
 
+  const filteredTopics = selectedCategoria
+    ? topics.filter(t => t.categoryId === selectedCategoria)
+    : topics;
 
-  const handlePageChange = (page: number) => {
-    setCurrentPage(page);
-    // Scroll to top cuando cambia de página
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  };
+  const currentTopic = filteredTopics.find(t => t.id === selectedTopicId) || null;
+  const currentComments = currentTopic
+    ? comments.filter(c => c.topicId === currentTopic.id)
+    : [];
 
-  if (loading) {
-    return <p className="text-center text-gray-500 text-lg my-8">Cargando documentos...</p>;
-  }
-  if (error) {
-    return <p className="text-center text-red-500 text-lg my-8">{error}</p>;
-  }
-
-  // Handler para ver detalles
-
-
-  const handleCloseModal = () => {
-    setIsModalOpen(false);
-    setSelectedBook(null);
-  };
-
-  const handleClosePhysicalBookModal = () => {
-    setIsPhysicalBookModalOpen(false);
-    setSelectedBook(null);
-  };
-
-
-
-  // Handler para solicitar documento físico
-  const handleReserve = (book: PreparedBook) => {
-    if (!isAuthenticated || !user) {
-      setReservationMessage('Debes iniciar sesión para solicitar un documento.');
+  const handleCreateTopic = () => {
+    if (!user) {
+      alert('Debes iniciar sesión para crear un tema en el foro.');
       return;
     }
-    if (user.estado === 'Moroso') {
-      setReservationMessage('Usted se encuentra bloqueado por morosidad. Por favor, regularice su situación lo antes posible para restablecer el acceso.');
+    if (!selectedCategoria) {
+      alert('Primero selecciona una categoría del foro.');
       return;
     }
-    
-    // Abrir modal de confirmación
-    setSelectedBookForReservation(book);
-    setIsReservationModalOpen(true);
+    if (!newTopicTitle.trim() || !newTopicContent.trim()) {
+      alert('Por favor completa el título y el contenido del tema.');
+      return;
+    }
+
+    const newId = topics.length > 0 ? Math.max(...topics.map(t => t.id)) + 1 : 1;
+    const newTopic: ForumTopic = {
+      id: newId,
+      categoryId: selectedCategoria,
+      title: newTopicTitle.trim(),
+      content: newTopicContent.trim(),
+      author: user.nombre,
+      createdAt: new Date().toISOString(),
+    };
+
+    const updatedTopics = [...topics, newTopic];
+    saveForumData(updatedTopics, comments);
+    setNewTopicTitle('');
+    setNewTopicContent('');
+    setSelectedTopicId(newId);
   };
 
-
-
-  const handleConfirmReservation = async () => {
-    if (!selectedBookForReservation || !user) return;
-    
-    try {
-      await registerBookReservation({ 
-        libro_id: Number(selectedBookForReservation.id), 
-        usuario_id: user.id 
-      });
-      setReservationMessage('¡Reserva realizada con éxito!');
-      
-      // Recargar los documentos para actualizar las cantidades
-      const updatedBooks = await fetchBooks();
-      setBooks(updatedBooks);
-      
-      // Actualizar órdenes activas del usuario
-      setUserActiveOrders(prev => new Set([...prev, selectedBookForReservation.id]));
-      
-      // Disparar actualización del historial de reservas en el Navbar
-      triggerRefresh();
-      
-    } catch (err: any) {
-      // Mostrar mensaje de error específico
-      const errorMessage = err.message || 'Error al realizar la reserva.';
-      setReservationMessage(errorMessage);
+  const handleAddComment = () => {
+    if (!user) {
+      alert('Debes iniciar sesión para comentar.');
+      return;
     }
-    setTimeout(() => setReservationMessage(null), 4000); // Más tiempo para leer el mensaje
+    if (!currentTopic) return;
+    if (!newCommentContent.trim()) {
+      alert('Escribe un comentario antes de enviar.');
+      return;
+    }
+
+    const newId = comments.length > 0 ? Math.max(...comments.map(c => c.id)) + 1 : 1;
+    const newComment: ForumComment = {
+      id: newId,
+      topicId: currentTopic.id,
+      author: user.nombre,
+      content: newCommentContent.trim(),
+      createdAt: new Date().toISOString(),
+    };
+
+    const updatedComments = [...comments, newComment];
+    saveForumData(topics, updatedComments);
+    setNewCommentContent('');
+  };
+
+  const formatDate = (iso: string) => {
+    const d = new Date(iso);
+    return d.toLocaleString('es-ES', {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
   };
 
   return (
-    <>
-      <h1 className='text-3xl sm:text-4xl lg:text-5xl font-semibold text-center mb-8 sm:mb-12'>
-        {getPageTitle()}
-      </h1>
+    <div className="min-h-screen bg-gray-50">
+      <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <h1 className='text-3xl sm:text-4xl lg:text-5xl font-semibold text-center mb-8 sm:mb-12'>
+          {getPageTitle()}
+        </h1>
 
+        {/* Fila de categorías del foro comunitario */}
+        <div className="mb-8 flex flex-wrap justify-center gap-3 sm:gap-4">
+          <button
+            onClick={() => handleCategoryClick(null)}
+            className={`px-4 py-2 rounded-full text-sm sm:text-base font-medium border transition-all ${
+              !selectedCategoria
+                ? 'bg-blue-600 text-white border-blue-600 shadow'
+                : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+            }`}
+          >
+            Todas las categorías
+          </button>
+          {forumCategories.map(cat => (
+            <button
+              key={cat.id}
+              onClick={() => handleCategoryClick(cat.id)}
+              className={`px-4 py-2 rounded-full text-xs sm:text-sm font-medium border transition-all text-left ${
+                selectedCategoria === cat.id
+                  ? 'bg-blue-600 text-white border-blue-600 shadow'
+                  : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+              }`}
+              title={cat.description}
+            >
+              {cat.label}
+            </button>
+          ))}
+        </div>
 
+        {/* Descripción de la categoría seleccionada */}
+        {selectedCategoryInfo && (
+          <div className="mb-8 max-w-3xl mx-auto bg-white border border-gray-200 rounded-xl p-4 sm:p-6 shadow-sm">
+            <h2 className="text-lg sm:text-xl font-semibold text-gray-800 mb-2">
+              {selectedCategoryInfo.label}
+            </h2>
+            <p className="text-sm sm:text-base text-gray-600">
+              {selectedCategoryInfo.description}
+            </p>
+          </div>
+        )}
 
-      {/* Banner informativo para usuarios no autenticados */}
-      {!isAuthenticated && (
-        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
-          <div className="flex items-center">
-            <div className="flex-shrink-0">
-              <svg className="h-5 w-5 text-blue-400" viewBox="0 0 20 20" fill="currentColor">
-                <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
-              </svg>
+        {/* Lista de temas y creación de nuevo tema */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+          {/* Columna de temas */}
+          <div className="lg:col-span-1">
+            <div className="bg-white border border-gray-200 rounded-xl p-4 sm:p-5 shadow-sm mb-4">
+              <h3 className="text-base sm:text-lg font-semibold text-gray-800 mb-3">
+                Temas recientes
+              </h3>
+              {filteredTopics.length === 0 ? (
+                <p className="text-sm text-gray-500">
+                  Aún no hay temas en este apartado. Sé el primero en crear uno.
+                </p>
+              ) : (
+                <ul className="space-y-3 max-h-80 overflow-y-auto pr-1">
+                  {filteredTopics
+                    .slice()
+                    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+                    .map(topic => (
+                      <li
+                        key={topic.id}
+                        className={`p-3 rounded-lg border cursor-pointer transition-colors ${
+                          selectedTopicId === topic.id
+                            ? 'border-blue-500 bg-blue-50'
+                            : 'border-gray-200 bg-white hover:bg-gray-50'
+                        }`}
+                        onClick={() => setSelectedTopicId(topic.id)}
+                      >
+                        <p className="text-sm font-semibold text-gray-800 mb-1 truncate">
+                          {topic.title}
+                        </p>
+                        <p className="text-xs text-gray-500 mb-1">
+                          Por {topic.author} · {formatDate(topic.createdAt)}
+                        </p>
+                        <p className="text-xs text-gray-600 line-clamp-2">
+                          {topic.content}
+                        </p>
+                      </li>
+                    ))}
+                </ul>
+              )}
             </div>
-            <div className="ml-3">
-              <p className="text-sm text-blue-700">
-                <strong>Inicia sesión</strong> para poder descargar los documentos. Puedes navegar y ver la información sin necesidad de registrarte.
-                {!isConfigured && (
-                  <span className="block mt-1 text-xs text-blue-600">
-                    (Modo simulado: El sistema de autenticación no está configurado)
-                  </span>
-                )}
-              </p>
+
+            {/* Crear nuevo tema */}
+            <div className="bg-white border border-gray-200 rounded-xl p-4 sm:p-5 shadow-sm">
+              <h3 className="text-base sm:text-lg font-semibold text-gray-800 mb-3">
+                Crear nuevo tema
+              </h3>
+              {!user && (
+                <p className="text-xs sm:text-sm text-orange-600 mb-3">
+                  Debes iniciar sesión para crear un tema en el foro.
+                </p>
+              )}
+              {!selectedCategoria && (
+                <p className="text-xs sm:text-sm text-gray-500 mb-3">
+                  Selecciona primero una categoría para crear un tema específico.
+                </p>
+              )}
+              <input
+                type="text"
+                value={newTopicTitle}
+                onChange={e => setNewTopicTitle(e.target.value)}
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm mb-2 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                placeholder="Título del tema (ej: Soy mecánico disponible en la torre B)"
+              />
+              <textarea
+                value={newTopicContent}
+                onChange={e => setNewTopicContent(e.target.value)}
+                rows={4}
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm mb-3 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                placeholder="Descríbete, indica tus servicios o el tema que quieres tratar..."
+              />
+              <button
+                onClick={handleCreateTopic}
+                className="w-full bg-blue-600 text-white text-sm font-medium py-2.5 rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
+                disabled={!user}
+              >
+                Publicar tema
+              </button>
             </div>
           </div>
-        </div>
-      )}
 
-      {/* Mensaje de confirmación de reserva */}
-      {reservationMessage && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-blue-600 text-white px-6 py-3 rounded shadow-lg z-50 animate-fade-in">
-          {reservationMessage}
-        </div>
-      )}
-
-      <div className='flex flex-col gap-8 sm:gap-12'>
-          {filteredBooks.length === 0 ? (
-            <div className="my-32">
-              <p className="text-center text-gray-500 text-lg my-8">No hay documentos disponibles.</p>
-            </div>
-          ) : (
-            <>
-              <div className='grid grid-cols-1 sm:grid-cols-2 gap-3 gap-y-8 sm:gap-y-10 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5'>
-                <AnimatePresence>
-                  {currentBooks.map(book => (
-                    <motion.div
-                      key={book.id}
-                      animate={{ opacity: 1, scale: 1 }}
-                      exit={{ opacity: 0, scale: 0.95 }}
-                      transition={{ duration: 0.25 }}
-                    >
-                      <CardBook
-                        title={book.title}
-                        authors={book.authors}
-                        price={book.price}
-                        img={book.coverImage}
-                        slug={book.slug}
-                        speciality={book.speciality}
-                        type={book.type}
-                        fragment={book.fragment}
-                        fileUrl={book.fileUrl}
-                        cantidadDisponible={book.cantidadDisponible}
-                        hasActiveOrder={userActiveOrders.has(book.id)}
-                        isAuthenticated={isAuthenticated}
-                        onViewDetails={() => {
-                          if (!isAuthenticated) {
-                            return; // No abrir modal si no está autenticado
-                          }
-                          setSelectedBook(book);
-                          setIsModalOpen(true);
-                        }}
-                        onShowDetails={() => {
-                          if (!isAuthenticated) {
-                            return; // No abrir modal si no está autenticado
-                          }
-                          setSelectedBook(book);
-                          setIsPhysicalBookModalOpen(true);
-                        }}
-                        onReserve={() => handleReserve(book)}
-                      />
-                    </motion.div>
-                  ))}
-                </AnimatePresence>
+          {/* Columna de tema seleccionado y comentarios */}
+          <div className="lg:col-span-2">
+            {!currentTopic ? (
+              <div className="bg-white border border-gray-200 rounded-xl p-6 text-center text-gray-500 shadow-sm">
+                <p className="mb-2 text-sm sm:text-base">
+                  Selecciona un tema de la lista o crea uno nuevo para comenzar la conversación.
+                </p>
+                <p className="text-xs sm:text-sm text-gray-400">
+                  Sugerencia: en "Profesionales Disponibles" puedes presentarte (por ejemplo, como mecánico) y ofrecer tus servicios a la comunidad.
+                </p>
               </div>
-              
-              {/* Paginación */}
-              <div className="mt-8">
-                <Pagination
-                  currentPage={currentPage}
-                  totalPages={totalPages}
-                  onPageChange={handlePageChange}
-                  totalItems={totalItems}
-                  itemsPerPage={itemsPerPage}
-                />
-              </div>
-            </>
-          )}
-      </div>
-
-      {/* Modal */}
-      <AnimatePresence>
-        {isModalOpen && selectedBook && (
-          <motion.div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            onClick={handleCloseModal} // Cerrar al hacer click fuera
-          >
-            <motion.div
-              className="bg-white rounded-lg shadow-lg max-w-4xl w-[95%] max-h-[90vh] p-4 sm:p-6 lg:p-8 relative flex flex-col items-center"
-              initial={{ scale: 0.9, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.9, opacity: 0 }}
-              transition={{ duration: 0.2 }}
-              onClick={e => e.stopPropagation()} // Evitar que el click dentro cierre el modal
-            >
-              <button
-                onClick={handleCloseModal}
-                className="absolute top-2 right-2 text-gray-500 hover:text-gray-700 text-2xl z-10"
-              >
-                &times;
-              </button>
-              {/* Título y visor PDF */}
-              <h3 className="text-base sm:text-lg font-bold text-center w-full truncate mb-2 sm:mb-4">{selectedBook.title}</h3>
-              
-              {/* Contenido del modal */}
-              <div className="w-full h-[50vh] sm:h-[60vh] lg:h-[65vh] mb-4 flex items-center justify-center relative">
-                {/* Botón flotante para detalles */}
-                <BookDetailsPopover book={selectedBook} />
-                
-                {/* Mostrar PDF si existe, sino mostrar mensaje */}
-                {selectedBook.fileUrl ? (
-                  <PDFViewer fileUrl={selectedBook.fileUrl} isAuthenticated={isAuthenticated} />
-                ) : (
-                  <div className="text-center">
-                    <div className="text-red-500 text-6xl mb-4">📄</div>
-                    <p className="text-red-500 text-lg mb-2">Este documento no tiene PDF disponible</p>
-                    <p className="text-gray-600 text-sm">El PDF no está asociado a este documento en la base de datos</p>
-                  </div>
-                )}
-              </div>
-              
-              {/* Botones de acción - solo para usuarios autenticados */}
-              {isAuthenticated && selectedBook.fileUrl && (
-                <div className="flex items-center justify-center gap-4 mt-4">
-                  <button
-                    onClick={() => window.open(selectedBook.fileUrl, '_blank')}
-                    className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition"
-                  >
-                    Abrir en nueva ventana
-                  </button>
-                  <a
-                    href={selectedBook.fileUrl}
-                    download
-                    className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 transition"
-                  >
-                    Descargar PDF
-                  </a>
+            ) : (
+              <div className="space-y-4">
+                {/* Detalle del tema */}
+                <div className="bg-white border border-gray-200 rounded-xl p-5 sm:p-6 shadow-sm">
+                  <h2 className="text-lg sm:text-xl font-bold text-gray-900 mb-2">
+                    {currentTopic.title}
+                  </h2>
+                  <p className="text-xs sm:text-sm text-gray-500 mb-4">
+                    Publicado por <span className="font-semibold">{currentTopic.author}</span> · {formatDate(currentTopic.createdAt)}
+                  </p>
+                  <p className="text-sm sm:text-base text-gray-700 whitespace-pre-line mb-2">
+                    {currentTopic.content}
+                  </p>
                 </div>
-              )}
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
 
-      {/* Modal de Confirmación de Reserva */}
-      <ReservationModal
-        isOpen={isReservationModalOpen}
-        onClose={() => {
-          setIsReservationModalOpen(false);
-          setSelectedBookForReservation(null);
-        }}
-        onConfirm={handleConfirmReservation}
-        bookTitle={selectedBookForReservation?.title || ''}
-      />
+                {/* Comentarios */}
+                <div className="bg-white border border-gray-200 rounded-xl p-5 sm:p-6 shadow-sm">
+                  <h3 className="text-base sm:text-lg font-semibold text-gray-800 mb-3">
+                    Comentarios
+                  </h3>
+                  {currentComments.length === 0 ? (
+                    <p className="text-sm text-gray-500 mb-4">
+                      Aún no hay comentarios en este tema. Sé el primero en responder.
+                    </p>
+                  ) : (
+                    <ul className="space-y-3 mb-4 max-h-72 overflow-y-auto pr-1">
+                      {currentComments
+                        .slice()
+                        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+                        .map(comment => (
+                          <li
+                            key={comment.id}
+                            className="border border-gray-200 rounded-lg p-3 bg-gray-50"
+                          >
+                            <p className="text-xs text-gray-500 mb-1">
+                              <span className="font-semibold">{comment.author}</span> · {formatDate(comment.createdAt)}
+                            </p>
+                            <p className="text-sm text-gray-700 whitespace-pre-line">
+                              {comment.content}
+                            </p>
+                          </li>
+                        ))}
+                    </ul>
+                  )}
 
-      {/* Modal para documentos físicos */}
-      <PhysicalBookModal
-        isOpen={isPhysicalBookModalOpen}
-        onClose={handleClosePhysicalBookModal}
-        book={selectedBook}
-        onReserve={() => {
-          if (selectedBook) {
-            handleReserve(selectedBook);
-            handleClosePhysicalBookModal();
-          }
-        }}
-        hasActiveOrder={selectedBook ? userActiveOrders.has(selectedBook.id) : false}
-        cantidadDisponible={selectedBook?.cantidadDisponible}
-        isAuthenticated={isAuthenticated}
-      />
-
-      {/* Botón de scroll to top */}
-      <ScrollToTop />
-    </>
-  );
-}
-
-// Popover de detalles del documento
-function BookDetailsPopover({ book }: { book: PreparedBook }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <div className="absolute left-0 top-1/2 -translate-y-1/2 z-20 flex items-center">
-      <button
-        className="bg-gray-200 hover:bg-gray-300 text-gray-700 rounded-full w-10 h-10 flex items-center justify-center shadow transition"
-        onClick={() => setOpen(o => !o)}
-        title="Ver detalles"
-      >
-        <span className="sr-only">Ver detalles</span>
-        <svg width="20" height="20" fill="none" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2"/><path d="M14 8l-4 4 4 4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
-      </button>
-      <AnimatePresence>
-        {open && (
-          <motion.div
-            initial={{ opacity: 0, y: -20 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -20 }}
-            transition={{ duration: 0.22 }}
-            className="mr-2 bg-white rounded-lg shadow-lg p-4 w-64 border border-gray-200 text-sm text-left right-full relative"
-            style={{ left: 'auto', right: '100%' }}
-          >
-            {/* Flecha visual */}
-            <span className="absolute top-1/2 right-[-3px] -translate-y-1/2 w-4 h-4">
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <polygon points="0,8 16,0 16,16" fill="#fff" stroke="#e5e7eb" strokeWidth="1" />
-              </svg>
-            </span>
-            <div className="font-bold text-base mb-1 truncate">{book.title}</div>
-            <div className="mb-1"><span className="font-semibold">Tipo:</span> {book.type}</div>
-            <div className="mb-1"><span className="font-semibold">Especialidad:</span> {book.speciality}</div>
-            <div className="mb-1"><span className="font-semibold">Sinopsis:</span> <span className="block text-gray-600 max-h-24 overflow-y-auto whitespace-pre-line">{book.description?.content?.[0]?.content?.[0]?.text || 'Sin sinopsis.'}</span></div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+                  {/* Formulario de nuevo comentario */}
+                  {!user && (
+                    <p className="text-xs sm:text-sm text-orange-600 mb-2">
+                      Debes iniciar sesión para participar en la conversación.
+                    </p>
+                  )}
+                  <textarea
+                    value={newCommentContent}
+                    onChange={e => setNewCommentContent(e.target.value)}
+                    rows={3}
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm mb-2 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    placeholder="Escribe tu comentario o respuesta..."
+                  />
+                  <button
+                    onClick={handleAddComment}
+                    className="w-full bg-green-600 text-white text-sm font-medium py-2.5 rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50"
+                    disabled={!user}
+                  >
+                    Publicar comentario
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

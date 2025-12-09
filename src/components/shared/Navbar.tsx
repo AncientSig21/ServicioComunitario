@@ -317,7 +317,7 @@ export const Navbar = () => {
 					)}
 				</AnimatePresence>
 
-				{isConfigured && isAuthenticated && user ? (
+				{isAuthenticated && user ? (
 					<>
 						{/* Botón para admin: Ir al dashboard */}
 						{(user.rol === 'admin' || user.rol === 'Administrador') && (
@@ -403,12 +403,12 @@ export const Navbar = () => {
 					</>
 				) : (
 					<div className="flex items-center gap-3">
-					<button
-						onClick={handleLogin}
+						<button
+							onClick={handleLogin}
 							className='bg-secondary text-white py-2 px-4 rounded hover:bg-secondary-dark transition font-medium'
-					>
-						Iniciar sesión
-					</button>
+						>
+							Iniciar sesión
+						</button>
 						{!isConfigured && (
 							<span className="text-yellow-300 text-xs bg-yellow-800 px-2 py-1 rounded">
 								Configuración pendiente

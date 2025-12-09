@@ -14,29 +14,23 @@ export const useAuth = () => {
     setUser(currentUser);
   };
 
-  // Verificar si Supabase está configurado
+  // Verificar si Supabase está configurado e inicializar usuario desde localStorage
   useEffect(() => {
     try {
       const supabaseKey = import.meta.env.VITE_SUPABASE_API_KEY;
       const supabaseUrl = import.meta.env.VITE_PROJECT_URL_SUPABASE;
-      
-      if (!supabaseKey || !supabaseUrl) {
-        console.warn('Supabase no está configurado. Usando modo simulado.');
-        setIsConfigured(false);
-        setLoading(false);
-        return;
-      }
-      
-      // Verificar que las credenciales sean válidas
-      if (supabaseKey === 'undefined' || supabaseUrl === 'undefined') {
-        console.warn('Variables de entorno de Supabase no están definidas correctamente.');
-        setIsConfigured(false);
-        setLoading(false);
-        return;
-      }
-      
-      setIsConfigured(true);
+
+      // Siempre intentamos leer el usuario desde localStorage para modo simulado
       updateUserFromStorage();
+
+      if (!supabaseKey || !supabaseUrl || supabaseKey === 'undefined' || supabaseUrl === 'undefined') {
+        console.warn('Supabase no está configurado o las variables no son válidas. Usando modo simulado.');
+        setIsConfigured(false);
+        setLoading(false);
+        return;
+      }
+
+      setIsConfigured(true);
       setLoading(false);
     } catch (err) {
       console.warn('Error al inicializar autenticación:', err);
@@ -138,13 +132,12 @@ export const useAuth = () => {
 
   // Función de logout
   const logout = () => {
-    if (isConfigured) {
-      authService.logout();
-    }
+    // Siempre limpiar el usuario en localStorage, incluso en modo simulado
+    authService.logout();
     setUser(null);
     setError(null);
-    
-    // Recargar la página después de cerrar sesión
+
+    // Recargar la página después de cerrar sesión para reiniciar el estado global
     setTimeout(() => {
       window.location.reload();
     }, 100);
@@ -162,15 +155,15 @@ export const useAuth = () => {
 
   // Función para actualizar el estado del usuario desde la base de datos
   const refreshUserStatus = async () => {
-    if (!user) return;
-    
+    if (!user || !supabase) return;
+
     try {
       const { data, error } = await supabase
         .from('usuarios')
         .select('estado')
         .eq('id', user.id)
         .single();
-        
+
       if (!error && data) {
         const updatedUser = { ...user, estado: data.estado };
         authService.setCurrentUser(updatedUser);
