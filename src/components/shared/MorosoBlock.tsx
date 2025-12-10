@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../../supabase/client';
 import { User } from '../../services/authService';
+import { notificationService } from '../../services/notificationService';
 
 interface MorosoBlockProps {
   user: User;
@@ -18,10 +19,27 @@ interface OrdenMorosa {
 const MorosoBlock: React.FC<MorosoBlockProps> = ({ user }) => {
   const [ordenesMorosas, setOrdenesMorosas] = useState<OrdenMorosa[]>([]);
   const [loading, setLoading] = useState(true);
+  const [showPaymentForm, setShowPaymentForm] = useState(false);
+  const [monto, setMonto] = useState('');
+  const [comprobanteUrl, setComprobanteUrl] = useState('');
+  const [descripcion, setDescripcion] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [submitSuccess, setSubmitSuccess] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
   useEffect(() => {
     const fetchOrdenesMorosas = async () => {
       try {
+        const supabaseKey = import.meta.env.VITE_SUPABASE_API_KEY;
+        const supabaseUrl = import.meta.env.VITE_PROJECT_URL_SUPABASE;
+        
+        if (!supabaseKey || !supabaseUrl || supabaseKey === 'undefined' || supabaseUrl === 'undefined') {
+          // Modo simulado - no hay órdenes morosas en este contexto
+          setOrdenesMorosas([]);
+          setLoading(false);
+          return;
+        }
+
         const { data, error } = await supabase
           .from('ordenes')
           .select(`
@@ -70,10 +88,10 @@ const MorosoBlock: React.FC<MorosoBlockProps> = ({ user }) => {
             </svg>
           </div>
           <h1 className="text-2xl font-bold text-gray-900 mb-2">
-            Cuenta Bloqueada
+            Cuenta Bloqueada - Estado Moroso
           </h1>
           <p className="text-gray-600">
-            Tu cuenta ha sido bloqueada debido a libros sin devolver
+            Tu cuenta ha sido bloqueada debido a pagos pendientes
           </p>
         </div>
 
@@ -117,12 +135,160 @@ const MorosoBlock: React.FC<MorosoBlockProps> = ({ user }) => {
           )}
         </div>
 
+        {/* Formulario de pago */}
+        {!showPaymentForm ? (
+          <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
+            <h3 className="font-semibold text-blue-900 mb-2">¿Realizaste el pago?</h3>
+            <div className="space-y-2 text-sm text-blue-800 mb-4">
+              <p>Si ya realizaste el pago de tu morosidad, puedes enviar una notificación al administrador con los detalles de tu pago.</p>
+            </div>
+            <button
+              onClick={() => setShowPaymentForm(true)}
+              className="w-full bg-blue-600 text-white py-2 px-4 rounded-lg hover:bg-blue-700 transition font-medium"
+            >
+              Enviar Notificación de Pago
+            </button>
+          </div>
+        ) : (
+          <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
+            <h3 className="font-semibold text-blue-900 mb-4">Notificación de Pago</h3>
+            
+            {submitSuccess ? (
+              <div className="bg-green-50 border border-green-200 rounded-lg p-4 mb-4">
+                <p className="text-green-800 font-medium">✓ Notificación enviada exitosamente</p>
+                <p className="text-green-700 text-sm mt-2">El administrador revisará tu solicitud y te notificará cuando se resuelva.</p>
+                <button
+                  onClick={() => {
+                    setShowPaymentForm(false);
+                    setSubmitSuccess(false);
+                    setMonto('');
+                    setComprobanteUrl('');
+                    setDescripcion('');
+                  }}
+                  className="mt-4 text-blue-600 hover:text-blue-800 text-sm underline"
+                >
+                  Enviar otra notificación
+                </button>
+              </div>
+            ) : (
+              <form
+                onSubmit={async (e) => {
+                  e.preventDefault();
+                  setSubmitting(true);
+                  setSubmitError(null);
+
+                  try {
+                    await notificationService.createNotification({
+                      tipo: 'pago',
+                      titulo: `Notificación de Pago - ${user.nombre}`,
+                      mensaje: `El residente ${user.nombre} (${user.numeroApartamento || 'N/A'}, ${user.condominio || 'N/A'}) ha enviado una notificación de pago.`,
+                      usuario_id: user.id,
+                      relacion_id: user.id,
+                      relacion_tipo: 'pago_morosidad',
+                      estado: 'pendiente',
+                      leida: false,
+                      accion_requerida: true,
+                      datos_adicionales: JSON.stringify({
+                        monto: monto,
+                        comprobante_url: comprobanteUrl,
+                        descripcion: descripcion,
+                        usuario_nombre: user.nombre,
+                        usuario_correo: user.correo,
+                        usuario_apartamento: user.numeroApartamento,
+                        usuario_condominio: user.condominio,
+                      }),
+                    });
+
+                    setSubmitSuccess(true);
+                  } catch (error: any) {
+                    setSubmitError(error.message || 'Error al enviar la notificación');
+                  } finally {
+                    setSubmitting(false);
+                  }
+                }}
+                className="space-y-4"
+              >
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Monto pagado (opcional)
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={monto}
+                    onChange={(e) => setMonto(e.target.value)}
+                    placeholder="Ej: 150.00"
+                    className="w-full border p-2 rounded"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    URL del comprobante (opcional)
+                  </label>
+                  <input
+                    type="url"
+                    value={comprobanteUrl}
+                    onChange={(e) => setComprobanteUrl(e.target.value)}
+                    placeholder="https://ejemplo.com/comprobante.jpg"
+                    className="w-full border p-2 rounded"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">Puedes subir el comprobante a un servicio de almacenamiento y pegar el enlace aquí</p>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Descripción del pago
+                  </label>
+                  <textarea
+                    value={descripcion}
+                    onChange={(e) => setDescripcion(e.target.value)}
+                    placeholder="Describe el pago realizado, método de pago, fecha, etc."
+                    rows={3}
+                    className="w-full border p-2 rounded"
+                    required
+                  />
+                </div>
+
+                {submitError && (
+                  <div className="bg-red-50 border border-red-200 rounded-lg p-3">
+                    <p className="text-red-800 text-sm">{submitError}</p>
+                  </div>
+                )}
+
+                <div className="flex gap-2">
+                  <button
+                    type="submit"
+                    disabled={submitting}
+                    className="flex-1 bg-blue-600 text-white py-2 px-4 rounded-lg hover:bg-blue-700 transition font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {submitting ? 'Enviando...' : 'Enviar Notificación'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowPaymentForm(false);
+                      setMonto('');
+                      setComprobanteUrl('');
+                      setDescripcion('');
+                      setSubmitError(null);
+                    }}
+                    className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition"
+                  >
+                    Cancelar
+                  </button>
+                </div>
+              </form>
+            )}
+          </div>
+        )}
+
         {/* Instrucciones */}
-        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
-          <h3 className="font-semibold text-blue-900 mb-2">¿Cómo desbloquear mi cuenta?</h3>
-          <div className="space-y-2 text-sm text-blue-800">
-            <p>1. <strong>Devuelve los libros</strong> que tienes prestados en la biblioteca</p>
-            <p>2. <strong>Contacta al administrador</strong> para que verifique la devolución</p>
+        <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-6">
+          <h3 className="font-semibold text-yellow-900 mb-2">¿Cómo desbloquear mi cuenta?</h3>
+          <div className="space-y-2 text-sm text-yellow-800">
+            <p>1. <strong>Realiza el pago</strong> de tu morosidad pendiente</p>
+            <p>2. <strong>Envía una notificación</strong> al administrador con los detalles del pago</p>
             <p>3. <strong>Espera la confirmación</strong> del administrador para desbloquear tu cuenta</p>
           </div>
         </div>
@@ -132,9 +298,9 @@ const MorosoBlock: React.FC<MorosoBlockProps> = ({ user }) => {
           <h3 className="font-semibold text-yellow-900 mb-2">Contacto del Administrador</h3>
           <div className="space-y-1 text-sm text-yellow-800">
             <p><strong>Horario de atención:</strong> Lunes a Viernes, 8:00 AM - 6:00 PM</p>
-            <p><strong>Ubicación:</strong> Biblioteca Central, Piso 1</p>
+            <p><strong>Ubicación:</strong> Oficina de Administración del Condominio</p>
             <p><strong>Teléfono:</strong> (123) 456-7890</p>
-            <p><strong>Email:</strong> admin@biblioteca.edu</p>
+            <p><strong>Email:</strong> admin@condominio.com</p>
           </div>
         </div>
 

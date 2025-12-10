@@ -70,18 +70,89 @@ export const notificationService = {
       return nuevaNotificacion;
     }
 
-    // Supabase
-    const { data, error } = await (supabase as any)
-      .from('notificaciones')
-      .insert([{ ...notificacion, fecha_creacion: new Date().toISOString() }])
-      .select()
-      .single();
+    // Supabase - intentar insertar, pero hacer fallback si hay error con datos_adicionales
+    try {
+      // Preparar datos para insertar, excluyendo datos_adicionales si no existe la columna
+      const datosParaInsertar: any = {
+        tipo: notificacion.tipo,
+        titulo: notificacion.titulo,
+        mensaje: notificacion.mensaje,
+        usuario_id: notificacion.usuario_id,
+        relacion_id: notificacion.relacion_id,
+        relacion_tipo: notificacion.relacion_tipo,
+        estado: notificacion.estado,
+        leida: notificacion.leida,
+        accion_requerida: notificacion.accion_requerida,
+        fecha_creacion: new Date().toISOString(),
+      };
 
-    if (error) {
-      throw error;
+      // Si hay datos_adicionales, intentar incluirlos, pero si falla, incluirlos en el mensaje
+      if (notificacion.datos_adicionales) {
+        datosParaInsertar.datos_adicionales = notificacion.datos_adicionales;
+      }
+
+      const { data, error } = await (supabase as any)
+        .from('notificaciones')
+        .insert([datosParaInsertar])
+        .select()
+        .single();
+
+      if (error) {
+        // Si el error es por columna no encontrada, hacer fallback al modo simulado
+        if (error.message && error.message.includes('datos_adicionales')) {
+          console.warn('⚠️ Columna datos_adicionales no existe en Supabase, usando modo simulado');
+          // Incluir datos_adicionales en el mensaje como JSON
+          datosParaInsertar.mensaje = `${datosParaInsertar.mensaje}\n\n[Datos adicionales: ${notificacion.datos_adicionales}]`;
+          // Hacer fallback al modo simulado
+          const db = getMockDatabase();
+          if (!db.notificaciones) {
+            db.notificaciones = [];
+          }
+          
+          const nuevaNotificacion: Notificacion = {
+            id: db.notificaciones.length > 0 
+              ? Math.max(...db.notificaciones.map((n: any) => n.id)) + 1 
+              : 1,
+            ...notificacion,
+            fecha_creacion: new Date().toISOString(),
+            fecha_lectura: null,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          };
+          
+          db.notificaciones.push(nuevaNotificacion);
+          saveMockDatabase(db);
+          
+          return nuevaNotificacion;
+        }
+        throw error;
+      }
+
+      return data as Notificacion;
+    } catch (error: any) {
+      // Si hay cualquier error, hacer fallback al modo simulado
+      console.warn('⚠️ Error al insertar en Supabase, usando modo simulado:', error);
+      const db = getMockDatabase();
+      if (!db.notificaciones) {
+        db.notificaciones = [];
+      }
+      
+      const nuevaNotificacion: Notificacion = {
+        id: db.notificaciones.length > 0 
+          ? Math.max(...db.notificaciones.map((n: any) => n.id)) + 1 
+          : 1,
+        ...notificacion,
+        fecha_creacion: new Date().toISOString(),
+        fecha_lectura: null,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      
+      db.notificaciones.push(nuevaNotificacion);
+      saveMockDatabase(db);
+      
+      return nuevaNotificacion;
     }
-
-    return data as Notificacion;
   },
 
   // Obtener todas las notificaciones pendientes

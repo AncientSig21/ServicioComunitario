@@ -7,6 +7,7 @@ import { PasswordInput } from '../components/shared/PasswordInput';
 export const LoginPage = () => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [tipoResidencia, setTipoResidencia] = useState('');
   const [errors, setErrors] = useState<{[key: string]: string}>({});
   const navigate = useNavigate();
   const { login, loading, error, clearError, isConfigured } = useAuth();
@@ -21,6 +22,11 @@ export const LoginPage = () => {
     // Validar contraseña
     const passwordError = validation.getPasswordError(password);
     if (passwordError) newErrors.password = passwordError;
+
+    // Validar tipo de residencia
+    if (!tipoResidencia) {
+      newErrors.tipoResidencia = 'Selecciona tu tipo de residencia';
+    }
 
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
@@ -37,6 +43,7 @@ export const LoginPage = () => {
     const result = await login({
       correo: email,
       contraseña: password,
+      tipoResidencia: tipoResidencia || undefined,
     });
 
     if (result.success) {
@@ -60,8 +67,17 @@ export const LoginPage = () => {
 
   return (
     <div className="relative min-h-screen flex items-center justify-center">
-      {/* Fondo de imagen */}
-      <div className="fixed inset-0 bg-gradient-to-br from-blue-50 to-white z-[-1]" />
+      {/* Fondo con imagen del letrero de Ciudad Colonial */}
+      <div 
+        className="fixed inset-0 z-[-1] bg-cover bg-center bg-no-repeat"
+        style={{ 
+          backgroundImage: 'url(/img/ciudad-colonial-sign.jpg)',
+          backgroundSize: 'cover',
+          backgroundPosition: 'center',
+        }}
+      />
+      {/* Overlay oscuro para mejorar legibilidad del formulario */}
+      <div className="fixed inset-0 bg-black bg-opacity-40 z-[-1]" />
       <form
         onSubmit={handleLogin}
         className="relative z-10 bg-white p-8 rounded shadow-lg shadow-gray-400 w-full max-w-md flex flex-col gap-4"
@@ -100,6 +116,23 @@ export const LoginPage = () => {
           error={errors.password}
           required
         />
+
+        <select
+          value={tipoResidencia}
+          onChange={e => {
+            setTipoResidencia(e.target.value);
+            handleInputChange('tipoResidencia');
+          }}
+          className={`border p-2 rounded w-full ${errors.tipoResidencia ? 'border-red-500' : ''}`}
+          required
+        >
+          <option value="">Selecciona tu tipo de residencia</option>
+          <option value="Propietario">Propietario</option>
+          <option value="Inquilino">Inquilino</option>
+          <option value="Arrendatario">Arrendatario</option>
+          <option value="Familiar del Propietario">Familiar del Propietario</option>
+        </select>
+        {errors.tipoResidencia && <p className="text-red-500 text-sm">{errors.tipoResidencia}</p>}
 
         {error && <p className="text-red-500 text-sm text-center">{error}</p>}
         

@@ -2,41 +2,15 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
 import { validation } from '../utils/validation';
-import { PasswordInput } from '../components/shared/PasswordInput';
-
-const tiposResidencia = [
-  'Propietario',
-  'Inquilino',
-  'Arrendatario',
-  'Familiar del Propietario',
-];
 
 export const RegisterPage = () => {
   const [nombre, setNombre] = useState('');
   const [email, setEmail] = useState('');
   const [telefono, setTelefono] = useState('');
   const [cedula, setCedula] = useState('');
-  const [numeroApartamento, setNumeroApartamento] = useState('');
+  const [condominio, setCondominio] = useState('');
   const [tipoResidencia, setTipoResidencia] = useState('');
-  const [password, setPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
   const [errors, setErrors] = useState<{[key: string]: string}>({});
-  
-  // Campos condicionales para Propietario
-  const [fechaAdquisicion, setFechaAdquisicion] = useState('');
-  const [numeroEscritura, setNumeroEscritura] = useState('');
-  
-  // Campos condicionales para Inquilino/Arrendatario
-  const [nombrePropietario, setNombrePropietario] = useState('');
-  const [cedulaPropietario, setCedulaPropietario] = useState('');
-  const [telefonoPropietario, setTelefonoPropietario] = useState('');
-  const [fechaInicioContrato, setFechaInicioContrato] = useState('');
-  const [fechaFinContrato, setFechaFinContrato] = useState('');
-  
-  // Campos condicionales para Familiar del Propietario
-  const [nombrePropietarioRelacionado, setNombrePropietarioRelacionado] = useState('');
-  const [cedulaPropietarioRelacionado, setCedulaPropietarioRelacionado] = useState('');
-  const [parentesco, setParentesco] = useState('');
   
   const navigate = useNavigate();
   const { register, loading, error, clearError, isConfigured } = useAuth();
@@ -66,71 +40,15 @@ export const RegisterPage = () => {
       newErrors.cedula = 'La cédula debe contener solo números';
     }
 
-    // Validar número de apartamento
-    if (!numeroApartamento) {
-      newErrors.numeroApartamento = 'El número de apartamento es requerido';
+    // Validar condominio
+    if (!condominio) {
+      newErrors.condominio = 'Selecciona el condominio al que perteneces';
     }
 
     // Validar tipo de residencia
     if (!tipoResidencia) {
-      newErrors.tipoResidencia = 'Selecciona el tipo de residencia';
+      newErrors.tipoResidencia = 'Selecciona tu tipo de residencia';
     }
-
-    // Validaciones condicionales según tipo de residencia
-    if (tipoResidencia === 'Propietario') {
-      if (!fechaAdquisicion) {
-        newErrors.fechaAdquisicion = 'La fecha de adquisición es requerida';
-      }
-      if (!numeroEscritura) {
-        newErrors.numeroEscritura = 'El número de escritura es requerido';
-      }
-    }
-
-    if (tipoResidencia === 'Inquilino' || tipoResidencia === 'Arrendatario') {
-      if (!nombrePropietario) {
-        newErrors.nombrePropietario = 'El nombre del propietario es requerido';
-      }
-      if (!cedulaPropietario) {
-        newErrors.cedulaPropietario = 'La cédula del propietario es requerida';
-      } else if (!/^[0-9]+$/.test(cedulaPropietario)) {
-        newErrors.cedulaPropietario = 'La cédula debe contener solo números';
-      }
-      if (!telefonoPropietario) {
-        newErrors.telefonoPropietario = 'El teléfono del propietario es requerido';
-      }
-      if (!fechaInicioContrato) {
-        newErrors.fechaInicioContrato = 'La fecha de inicio del contrato es requerida';
-      }
-      if (!fechaFinContrato) {
-        newErrors.fechaFinContrato = 'La fecha de fin del contrato es requerida';
-      }
-      // Validar que la fecha de fin sea posterior a la de inicio
-      if (fechaInicioContrato && fechaFinContrato && new Date(fechaFinContrato) <= new Date(fechaInicioContrato)) {
-        newErrors.fechaFinContrato = 'La fecha de fin debe ser posterior a la fecha de inicio';
-      }
-    }
-
-    if (tipoResidencia === 'Familiar del Propietario') {
-      if (!nombrePropietarioRelacionado) {
-        newErrors.nombrePropietarioRelacionado = 'El nombre del propietario relacionado es requerido';
-      }
-      if (!cedulaPropietarioRelacionado) {
-        newErrors.cedulaPropietarioRelacionado = 'La cédula del propietario relacionado es requerida';
-      } else if (!/^[0-9]+$/.test(cedulaPropietarioRelacionado)) {
-        newErrors.cedulaPropietarioRelacionado = 'La cédula debe contener solo números';
-      }
-      if (!parentesco) {
-        newErrors.parentesco = 'El parentesco es requerido';
-      }
-    }
-
-    // Validar contraseña
-    const passwordError = validation.getPasswordError(password);
-    if (passwordError) newErrors.password = passwordError;
-
-    // Validar confirmar contraseña
-    const confirmPasswordError = validation.getConfirmPasswordError(password, confirmPassword);
-    if (confirmPasswordError) newErrors.confirmPassword = confirmPasswordError;
 
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
@@ -144,32 +62,18 @@ export const RegisterPage = () => {
       return;
     }
 
+    // Generar contraseña automáticamente usando la cédula como base
+    // El usuario podrá cambiarla después desde su perfil
+    const passwordAuto = cedula || 'temp123';
+
     const result = await register({
       nombre,
       correo: email,
-      contraseña: password,
-      escuela: `${numeroApartamento} - ${tipoResidencia}`, // Usamos escuela para almacenar info del condominio
+      contraseña: passwordAuto,
       telefono,
       cedula,
-      numeroApartamento,
+      condominio,
       tipoResidencia,
-      // Campos condicionales
-      ...(tipoResidencia === 'Propietario' && {
-        fechaAdquisicion,
-        numeroEscritura,
-      }),
-      ...((tipoResidencia === 'Inquilino' || tipoResidencia === 'Arrendatario') && {
-        nombrePropietario,
-        cedulaPropietario,
-        telefonoPropietario,
-        fechaInicioContrato,
-        fechaFinContrato,
-      }),
-      ...(tipoResidencia === 'Familiar del Propietario' && {
-        nombrePropietarioRelacionado,
-        cedulaPropietarioRelacionado,
-        parentesco,
-      }),
     });
 
     if (result.success) {
@@ -262,232 +166,38 @@ export const RegisterPage = () => {
         />
         {errors.cedula && <p className="text-red-500 text-sm">{errors.cedula}</p>}
 
-        <input
-          type="text"
-          placeholder="Número de apartamento/casa (ej: Apto 101, Casa 5)"
-          value={numeroApartamento}
+        <select
+          value={condominio}
           onChange={e => {
-            setNumeroApartamento(e.target.value);
-            handleInputChange('numeroApartamento', e.target.value);
+            setCondominio(e.target.value);
+            handleInputChange('condominio', e.target.value);
           }}
-          className={`border p-2 rounded w-full ${errors.numeroApartamento ? 'border-red-500' : ''}`}
+          className={`border p-2 rounded w-full ${errors.condominio ? 'border-red-500' : ''}`}
           required
-        />
-        {errors.numeroApartamento && <p className="text-red-500 text-sm">{errors.numeroApartamento}</p>}
+        >
+          <option value="">Selecciona tu condominio</option>
+          <option value="San Antonio">San Antonio</option>
+          <option value="Caripe">Caripe</option>
+          <option value="San Juan">San Juan</option>
+        </select>
+        {errors.condominio && <p className="text-red-500 text-sm">{errors.condominio}</p>}
 
         <select
           value={tipoResidencia}
           onChange={e => {
             setTipoResidencia(e.target.value);
             handleInputChange('tipoResidencia', e.target.value);
-            // Limpiar campos condicionales al cambiar el tipo
-            setFechaAdquisicion('');
-            setNumeroEscritura('');
-            setNombrePropietario('');
-            setCedulaPropietario('');
-            setTelefonoPropietario('');
-            setFechaInicioContrato('');
-            setFechaFinContrato('');
-            setNombrePropietarioRelacionado('');
-            setCedulaPropietarioRelacionado('');
-            setParentesco('');
           }}
           className={`border p-2 rounded w-full ${errors.tipoResidencia ? 'border-red-500' : ''}`}
           required
         >
           <option value="">Selecciona tu tipo de residencia</option>
-          {tiposResidencia.map(tipo => (
-            <option key={tipo} value={tipo}>{tipo}</option>
-          ))}
+          <option value="Propietario">Propietario</option>
+          <option value="Inquilino">Inquilino</option>
+          <option value="Arrendatario">Arrendatario</option>
+          <option value="Familiar del Propietario">Familiar del Propietario</option>
         </select>
         {errors.tipoResidencia && <p className="text-red-500 text-sm">{errors.tipoResidencia}</p>}
-
-        {/* Campos condicionales para Propietario */}
-        {tipoResidencia === 'Propietario' && (
-          <div className="border-t pt-4 mt-2 space-y-4">
-            <h3 className="font-semibold text-gray-700 mb-2">Información de Propiedad</h3>
-            
-            <input
-              type="date"
-              placeholder="Fecha de adquisición"
-              value={fechaAdquisicion}
-              onChange={e => {
-                setFechaAdquisicion(e.target.value);
-                handleInputChange('fechaAdquisicion', e.target.value);
-              }}
-              className={`border p-2 rounded w-full ${errors.fechaAdquisicion ? 'border-red-500' : ''}`}
-              required
-            />
-            {errors.fechaAdquisicion && <p className="text-red-500 text-sm">{errors.fechaAdquisicion}</p>}
-
-            <input
-              type="text"
-              placeholder="Número de escritura pública"
-              value={numeroEscritura}
-              onChange={e => {
-                setNumeroEscritura(e.target.value);
-                handleInputChange('numeroEscritura', e.target.value);
-              }}
-              className={`border p-2 rounded w-full ${errors.numeroEscritura ? 'border-red-500' : ''}`}
-              required
-            />
-            {errors.numeroEscritura && <p className="text-red-500 text-sm">{errors.numeroEscritura}</p>}
-          </div>
-        )}
-
-        {/* Campos condicionales para Inquilino/Arrendatario */}
-        {(tipoResidencia === 'Inquilino' || tipoResidencia === 'Arrendatario') && (
-          <div className="border-t pt-4 mt-2 space-y-4">
-            <h3 className="font-semibold text-gray-700 mb-2">Información del {tipoResidencia === 'Inquilino' ? 'Contrato de Alquiler' : 'Arrendamiento'}</h3>
-            
-            <input
-              type="text"
-              placeholder="Nombre completo del propietario"
-              value={nombrePropietario}
-              onChange={e => {
-                setNombrePropietario(e.target.value);
-                handleInputChange('nombrePropietario', e.target.value);
-              }}
-              className={`border p-2 rounded w-full ${errors.nombrePropietario ? 'border-red-500' : ''}`}
-              required
-            />
-            {errors.nombrePropietario && <p className="text-red-500 text-sm">{errors.nombrePropietario}</p>}
-
-            <input
-              type="text"
-              placeholder="Cédula del propietario"
-              value={cedulaPropietario}
-              onChange={e => {
-                setCedulaPropietario(e.target.value.replace(/\D/g, ''));
-                handleInputChange('cedulaPropietario', e.target.value);
-              }}
-              className={`border p-2 rounded w-full ${errors.cedulaPropietario ? 'border-red-500' : ''}`}
-              required
-            />
-            {errors.cedulaPropietario && <p className="text-red-500 text-sm">{errors.cedulaPropietario}</p>}
-
-            <input
-              type="tel"
-              placeholder="Teléfono del propietario"
-              value={telefonoPropietario}
-              onChange={e => {
-                setTelefonoPropietario(e.target.value);
-                handleInputChange('telefonoPropietario', e.target.value);
-              }}
-              className={`border p-2 rounded w-full ${errors.telefonoPropietario ? 'border-red-500' : ''}`}
-              required
-            />
-            {errors.telefonoPropietario && <p className="text-red-500 text-sm">{errors.telefonoPropietario}</p>}
-
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm text-gray-600 mb-1">Fecha de inicio del contrato</label>
-                <input
-                  type="date"
-                  value={fechaInicioContrato}
-                  onChange={e => {
-                    setFechaInicioContrato(e.target.value);
-                    handleInputChange('fechaInicioContrato', e.target.value);
-                  }}
-                  className={`border p-2 rounded w-full ${errors.fechaInicioContrato ? 'border-red-500' : ''}`}
-                  required
-                />
-                {errors.fechaInicioContrato && <p className="text-red-500 text-sm">{errors.fechaInicioContrato}</p>}
-              </div>
-
-              <div>
-                <label className="block text-sm text-gray-600 mb-1">Fecha de fin del contrato</label>
-                <input
-                  type="date"
-                  value={fechaFinContrato}
-                  onChange={e => {
-                    setFechaFinContrato(e.target.value);
-                    handleInputChange('fechaFinContrato', e.target.value);
-                  }}
-                  min={fechaInicioContrato}
-                  className={`border p-2 rounded w-full ${errors.fechaFinContrato ? 'border-red-500' : ''}`}
-                  required
-                />
-                {errors.fechaFinContrato && <p className="text-red-500 text-sm">{errors.fechaFinContrato}</p>}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Campos condicionales para Familiar del Propietario */}
-        {tipoResidencia === 'Familiar del Propietario' && (
-          <div className="border-t pt-4 mt-2 space-y-4">
-            <h3 className="font-semibold text-gray-700 mb-2">Información del Propietario Relacionado</h3>
-            
-            <input
-              type="text"
-              placeholder="Nombre completo del propietario relacionado"
-              value={nombrePropietarioRelacionado}
-              onChange={e => {
-                setNombrePropietarioRelacionado(e.target.value);
-                handleInputChange('nombrePropietarioRelacionado', e.target.value);
-              }}
-              className={`border p-2 rounded w-full ${errors.nombrePropietarioRelacionado ? 'border-red-500' : ''}`}
-              required
-            />
-            {errors.nombrePropietarioRelacionado && <p className="text-red-500 text-sm">{errors.nombrePropietarioRelacionado}</p>}
-
-            <input
-              type="text"
-              placeholder="Cédula del propietario relacionado"
-              value={cedulaPropietarioRelacionado}
-              onChange={e => {
-                setCedulaPropietarioRelacionado(e.target.value.replace(/\D/g, ''));
-                handleInputChange('cedulaPropietarioRelacionado', e.target.value);
-              }}
-              className={`border p-2 rounded w-full ${errors.cedulaPropietarioRelacionado ? 'border-red-500' : ''}`}
-              required
-            />
-            {errors.cedulaPropietarioRelacionado && <p className="text-red-500 text-sm">{errors.cedulaPropietarioRelacionado}</p>}
-
-            <select
-              value={parentesco}
-              onChange={e => {
-                setParentesco(e.target.value);
-                handleInputChange('parentesco', e.target.value);
-              }}
-              className={`border p-2 rounded w-full ${errors.parentesco ? 'border-red-500' : ''}`}
-              required
-            >
-              <option value="">Selecciona el parentesco</option>
-              <option value="Cónyuge">Cónyuge</option>
-              <option value="Hijo/Hija">Hijo/Hija</option>
-              <option value="Padre/Madre">Padre/Madre</option>
-              <option value="Hermano/Hermana">Hermano/Hermana</option>
-              <option value="Abuelo/Abuela">Abuelo/Abuela</option>
-              <option value="Nieto/Nieta">Nieto/Nieta</option>
-              <option value="Otro">Otro</option>
-            </select>
-            {errors.parentesco && <p className="text-red-500 text-sm">{errors.parentesco}</p>}
-          </div>
-        )}
-
-        <PasswordInput
-          value={password}
-          onChange={(value) => {
-            setPassword(value);
-            handleInputChange('password', value);
-          }}
-          placeholder="Contraseña"
-          error={errors.password}
-          required
-        />
-
-        <PasswordInput
-          value={confirmPassword}
-          onChange={(value) => {
-            setConfirmPassword(value);
-            handleInputChange('confirmPassword', value);
-          }}
-          placeholder="Confirmar contraseña"
-          error={errors.confirmPassword}
-          required
-        />
 
         {error && <p className="text-red-500 text-sm text-center">{error}</p>}
         

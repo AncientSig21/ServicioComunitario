@@ -3,6 +3,7 @@ import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
 dayjs.extend(relativeTime);
 import { Pagination } from '../components/shared/Pagination';
+import { notificationService, Notificacion } from '../services/notificationService';
 
 const MOCK_DB_KEY = 'mockDatabase_condominio';
 
@@ -18,6 +19,8 @@ interface Reporte {
   fecha: string;
   estado: 'pendiente' | 'completado' | 'cancelado' | 'vencido';
   fecha_vencimiento?: string;
+  notificacion_id?: number;
+  datos_adicionales?: any;
 }
 
 const getMockDatabase = () => {
@@ -56,8 +59,8 @@ const AdminReportsPage = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [searchBy, setSearchBy] = useState<string>('residente'); // residente, apartamento, descripcion
 
-  // Generar reportes desde los datos de usuarios y órdenes
-  const generarReportes = () => {
+  // Generar reportes desde los datos de usuarios, órdenes y notificaciones
+  const generarReportes = async () => {
     const db = getMockDatabase();
     const usuarios = db.usuarios || [];
     const reportesExistentes = db.reportes || [];
@@ -102,8 +105,45 @@ const AdminReportsPage = () => {
       }
     });
 
-    // Combinar reportes existentes con nuevos
-    const todosReportes = [...reportesExistentes, ...nuevosReportes];
+    // Agregar notificaciones de pago como reportes
+    try {
+      const notificaciones = await notificationService.getPendingNotifications();
+      notificaciones.forEach((notificacion: Notificacion) => {
+        if (notificacion.tipo === 'pago' && notificacion.relacion_tipo === 'pago_morosidad') {
+          let datosAdicionales: any = {};
+          if (notificacion.datos_adicionales) {
+            try {
+              datosAdicionales = JSON.parse(notificacion.datos_adicionales);
+            } catch (e) {
+              console.warn('Error al parsear datos adicionales:', e);
+            }
+          }
+
+          const usuario = usuarios.find((u: any) => u.id === notificacion.usuario_id);
+          nuevosReportes.push({
+            id: reporteId++,
+            tipo: 'pago',
+            residente_id: notificacion.usuario_id || 0,
+            residente_nombre: datosAdicionales.usuario_nombre || usuario?.nombre || 'N/A',
+            residente_correo: datosAdicionales.usuario_correo || usuario?.correo || 'N/A',
+            residente_apartamento: datosAdicionales.usuario_apartamento || usuario?.numeroApartamento || 'N/A',
+            descripcion: datosAdicionales.descripcion || notificacion.mensaje,
+            monto: datosAdicionales.monto ? parseFloat(datosAdicionales.monto) : undefined,
+            fecha: notificacion.fecha_creacion,
+            estado: notificacion.estado === 'pendiente' ? 'pendiente' : notificacion.estado === 'resuelta' ? 'completado' : 'pendiente',
+            notificacion_id: notificacion.id,
+            datos_adicionales: datosAdicionales,
+          });
+        }
+      });
+    } catch (error) {
+      console.error('Error al cargar notificaciones:', error);
+    }
+
+    // Combinar reportes existentes con nuevos (evitar duplicados)
+    const reportesIds = new Set(reportesExistentes.map((r: any) => r.id));
+    const reportesNuevosSinDuplicados = nuevosReportes.filter(r => !reportesIds.has(r.id));
+    const todosReportes = [...reportesExistentes, ...reportesNuevosSinDuplicados];
     
     // Guardar reportes actualizados
     db.reportes = todosReportes;
@@ -117,7 +157,7 @@ const AdminReportsPage = () => {
       setLoading(true);
       setError(null);
       try {
-        const reportesGenerados = generarReportes();
+        const reportesGenerados = await generarReportes();
         setReportes(reportesGenerados);
       } catch (err: any) {
         setError('Error al obtener reportes');
@@ -147,7 +187,7 @@ const AdminReportsPage = () => {
   };
 
   // Función para resolver morosidad
-  const resolverMorosidad = (reporteId: number, residenteId: number) => {
+  const resolverMorosidad = async (reporteId: number, residenteId: number) => {
     const db = getMockDatabase();
     
     // Cambiar estado del residente a Activo
@@ -163,9 +203,62 @@ const AdminReportsPage = () => {
     }
     
     saveMockDatabase(db);
-    generarReportes();
-    const reportesActualizados = generarReportes();
+    const reportesActualizados = await generarReportes();
     setReportes(reportesActualizados);
+  };
+
+  // Función para aprobar notificación de pago
+  const aprobarPago = async (reporteId: number, notificacionId: number, residenteId: number) => {
+    try {
+      // Resolver la notificación
+      await notificationService.resolveNotification(notificacionId);
+      
+      // Cambiar estado del residente a Activo
+      const db = getMockDatabase();
+      const usuarioIndex = db.usuarios.findIndex((u: any) => u.id === residenteId);
+      if (usuarioIndex !== -1) {
+        db.usuarios[usuarioIndex].estado = 'Activo';
+      }
+      
+      // Marcar reporte como completado
+      const reporteIndex = db.reportes.findIndex((r: any) => r.id === reporteId);
+      if (reporteIndex !== -1) {
+        db.reportes[reporteIndex].estado = 'completado';
+      }
+      
+      saveMockDatabase(db);
+      
+      // Actualizar lista de reportes
+      const reportesActualizados = await generarReportes();
+      setReportes(reportesActualizados);
+    } catch (error) {
+      console.error('Error al aprobar pago:', error);
+      alert('Error al aprobar el pago. Por favor, intenta nuevamente.');
+    }
+  };
+
+  // Función para rechazar notificación de pago
+  const rechazarPago = async (reporteId: number, notificacionId: number) => {
+    try {
+      // Resolver la notificación (marcar como resuelta pero rechazada)
+      await notificationService.resolveNotification(notificacionId);
+      
+      // Marcar reporte como cancelado
+      const db = getMockDatabase();
+      const reporteIndex = db.reportes.findIndex((r: any) => r.id === reporteId);
+      if (reporteIndex !== -1) {
+        db.reportes[reporteIndex].estado = 'cancelado';
+      }
+      
+      saveMockDatabase(db);
+      
+      // Actualizar lista de reportes
+      const reportesActualizados = await generarReportes();
+      setReportes(reportesActualizados);
+    } catch (error) {
+      console.error('Error al rechazar pago:', error);
+      alert('Error al rechazar el pago. Por favor, intenta nuevamente.');
+    }
   };
 
 
@@ -400,7 +493,16 @@ const AdminReportsPage = () => {
       </div>
                         </td>
                         <td className="px-4 py-3 text-sm">{reporte.residente_apartamento || 'N/A'}</td>
-                        <td className="px-4 py-3 text-sm">{reporte.descripcion}</td>
+                        <td className="px-4 py-3 text-sm">
+                          <div>
+                            <div>{reporte.descripcion}</div>
+                            {reporte.datos_adicionales?.comprobante_url && (
+                              <div className="text-xs text-gray-500 mt-1">
+                                Comprobante disponible
+                              </div>
+                            )}
+                          </div>
+                        </td>
                         <td className="px-4 py-3 text-sm">
                           {reporte.monto ? `$${reporte.monto.toFixed(2)}` : 'N/A'}
                         </td>
@@ -410,7 +512,36 @@ const AdminReportsPage = () => {
                           </span>
                         </td>
                         <td className="px-4 py-3">
-                          <div className="flex gap-2">
+                          <div className="flex gap-2 flex-wrap">
+                            {reporte.tipo === 'pago' && reporte.estado === 'pendiente' && reporte.notificacion_id && (
+                              <>
+                                <button
+                                  onClick={() => aprobarPago(reporte.id, reporte.notificacion_id!, reporte.residente_id)}
+                                  className="px-3 py-1 bg-green-500 text-white rounded text-xs hover:bg-green-600"
+                                  title="Aprobar pago y quitar morosidad"
+                                >
+                                  Aprobar
+                                </button>
+                                <button
+                                  onClick={() => rechazarPago(reporte.id, reporte.notificacion_id!)}
+                                  className="px-3 py-1 bg-red-500 text-white rounded text-xs hover:bg-red-600"
+                                  title="Rechazar pago"
+                                >
+                                  Rechazar
+                                </button>
+                                {reporte.datos_adicionales?.comprobante_url && (
+                                  <a
+                                    href={reporte.datos_adicionales.comprobante_url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="px-3 py-1 bg-blue-500 text-white rounded text-xs hover:bg-blue-600"
+                                    title="Ver comprobante"
+                                  >
+                                    Ver Comprobante
+                                  </a>
+                                )}
+                              </>
+                            )}
                             {reporte.tipo === 'morosidad' && reporte.estado === 'vencido' && (
                               <button
                                 onClick={() => resolverMorosidad(reporte.id, reporte.residente_id)}
@@ -420,7 +551,7 @@ const AdminReportsPage = () => {
                                 Resolver
                               </button>
                             )}
-                            {reporte.estado === 'pendiente' && (
+                            {reporte.estado === 'pendiente' && reporte.tipo !== 'pago' && (
                               <button
                                 onClick={() => updateReporteEstado(reporte.id, 'completado')}
                                 className="px-3 py-1 bg-blue-500 text-white rounded text-xs hover:bg-blue-600"
@@ -429,16 +560,16 @@ const AdminReportsPage = () => {
                                 Completar
                               </button>
                             )}
-                            {reporte.estado !== 'cancelado' && (
-                <button
+                            {reporte.estado !== 'cancelado' && reporte.tipo !== 'pago' && (
+                              <button
                                 onClick={() => updateReporteEstado(reporte.id, 'cancelado')}
                                 className="px-3 py-1 bg-gray-400 text-white rounded text-xs hover:bg-gray-500"
                                 title="Cancelar"
-                >
+                              >
                                 Cancelar
-                </button>
+                              </button>
                             )}
-              </div>
+                          </div>
                         </td>
                       </tr>
                     ))
