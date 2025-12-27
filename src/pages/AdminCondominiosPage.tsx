@@ -6,7 +6,6 @@ interface Condominio {
   id: number;
   nombre: string;
   direccion: string | null;
-  ciudad: string | null;
   estado: string | null;
   telefono: string | null;
   created_at: string | null;
@@ -26,7 +25,6 @@ const AdminCondominiosPage = () => {
   const [formData, setFormData] = useState({
     nombre: '',
     direccion: '',
-    ciudad: '',
     estado: '',
     telefono: ''
   });
@@ -64,8 +62,7 @@ const AdminCondominiosPage = () => {
       const query = searchQuery.toLowerCase();
       filtered = filtered.filter(condominio =>
         condominio.nombre?.toLowerCase().includes(query) ||
-        condominio.direccion?.toLowerCase().includes(query) ||
-        condominio.ciudad?.toLowerCase().includes(query)
+        condominio.direccion?.toLowerCase().includes(query)
       );
     }
 
@@ -95,7 +92,6 @@ const AdminCondominiosPage = () => {
         await editarCondominio(editingId, {
           nombre: formData.nombre,
           direccion: formData.direccion || null,
-          ciudad: formData.ciudad || null,
           estado: formData.estado || null,
           telefono: formData.telefono || null
         });
@@ -104,14 +100,13 @@ const AdminCondominiosPage = () => {
         await crearCondominio({
           nombre: formData.nombre,
           direccion: formData.direccion || null,
-          ciudad: formData.ciudad || null,
           estado: formData.estado || null,
           telefono: formData.telefono || null
         });
       }
 
       // Limpiar formulario y cerrar modal
-      setFormData({ nombre: '', direccion: '', ciudad: '', estado: '', telefono: '' });
+      setFormData({ nombre: '', direccion: '', estado: '', telefono: '' });
       setEditingId(null);
       setShowModal(false);
       await cargarCondominios();
@@ -126,7 +121,6 @@ const AdminCondominiosPage = () => {
     setFormData({
       nombre: condominio.nombre,
       direccion: condominio.direccion || '',
-      ciudad: condominio.ciudad || '',
       estado: condominio.estado || '',
       telefono: condominio.telefono || ''
     });
@@ -136,7 +130,7 @@ const AdminCondominiosPage = () => {
 
   // Cancelar edición/creación
   const handleCancel = () => {
-    setFormData({ nombre: '', direccion: '', ciudad: '', estado: '', telefono: '' });
+    setFormData({ nombre: '', direccion: '', estado: '', telefono: '' });
     setEditingId(null);
     setShowModal(false);
     setError(null);
@@ -193,7 +187,7 @@ const AdminCondominiosPage = () => {
           <div>
             <input
               type="text"
-              placeholder="Buscar por nombre, dirección o ciudad..."
+              placeholder="Buscar por nombre o dirección..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="w-full border p-2 rounded"
@@ -213,7 +207,6 @@ const AdminCondominiosPage = () => {
               <tr>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Nombre</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Dirección</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Ciudad</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Estado</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Teléfono</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Acciones</th>
@@ -222,7 +215,7 @@ const AdminCondominiosPage = () => {
             <tbody className="divide-y divide-gray-200">
               {currentCondominios.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="px-4 py-8 text-center text-gray-500">
+                  <td colSpan={5} className="px-4 py-8 text-center text-gray-500">
                     {searchQuery ? 'No se encontraron condominios' : 'No hay condominios registrados'}
                   </td>
                 </tr>
@@ -231,7 +224,6 @@ const AdminCondominiosPage = () => {
                   <tr key={condominio.id} className="hover:bg-gray-50">
                     <td className="px-4 py-3 text-sm font-medium">{condominio.nombre}</td>
                     <td className="px-4 py-3 text-sm">{condominio.direccion || 'N/A'}</td>
-                    <td className="px-4 py-3 text-sm">{condominio.ciudad || 'N/A'}</td>
                     <td className="px-4 py-3 text-sm">{condominio.estado || 'N/A'}</td>
                     <td className="px-4 py-3 text-sm">{condominio.telefono || 'N/A'}</td>
                     <td className="px-4 py-3">
@@ -322,17 +314,6 @@ const AdminCondominiosPage = () => {
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Ciudad
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.ciudad}
-                    onChange={(e) => setFormData({ ...formData, ciudad: e.target.value })}
-                    className="w-full border p-2 rounded"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
                     Estado
                   </label>
                   <input
@@ -378,5 +359,6 @@ const AdminCondominiosPage = () => {
 };
 
 export default AdminCondominiosPage;
+
 
 

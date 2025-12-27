@@ -38,3 +38,4 @@ WHERE table_name = 'usuarios'
 AND column_name = 'preguntas_seguridad';
 
 
+

@@ -1444,7 +1444,6 @@ export const fetchCondominios = async () => {
 export const crearCondominio = async (data: {
   nombre: string;
   direccion?: string | null;
-  ciudad?: string | null;
   estado?: string | null;
   telefono?: string | null;
 }) => {
@@ -1454,7 +1453,6 @@ export const crearCondominio = async (data: {
       .insert([{
         nombre: data.nombre,
         direccion: data.direccion || null,
-        ciudad: data.ciudad || null,
         estado: data.estado || null,
         telefono: data.telefono || null,
         created_at: getCurrentLocalISOString(),
@@ -1477,7 +1475,6 @@ export const editarCondominio = async (
   data: {
     nombre?: string;
     direccion?: string | null;
-    ciudad?: string | null;
     estado?: string | null;
     telefono?: string | null;
   }
@@ -1489,7 +1486,6 @@ export const editarCondominio = async (
 
     if (data.nombre !== undefined) updateData.nombre = data.nombre;
     if (data.direccion !== undefined) updateData.direccion = data.direccion;
-    if (data.ciudad !== undefined) updateData.ciudad = data.ciudad;
     if (data.estado !== undefined) updateData.estado = data.estado;
     if (data.telefono !== undefined) updateData.telefono = data.telefono;
 

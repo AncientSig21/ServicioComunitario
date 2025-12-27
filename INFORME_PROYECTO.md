@@ -683,3 +683,4 @@ El sistema está diseñado para evolucionar y adaptarse a nuevas necesidades, co
 **Versión del Documento**: 1.0  
 **Estado del Proyecto**: En Desarrollo Activo
 
+

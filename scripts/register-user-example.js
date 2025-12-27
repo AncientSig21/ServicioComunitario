@@ -191,3 +191,4 @@ export { registrarUsuarioSimple, registrarResidenteCompleto, listarViviendas, li
 
 
 
+

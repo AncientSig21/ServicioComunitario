@@ -27,3 +27,4 @@ console.log('2. Ejecuta: $env:SUPABASE_ACCESS_TOKEN="tu_token"; npm run types:ge
 
 
 
+
