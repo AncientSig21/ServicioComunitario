@@ -1,13 +1,17 @@
-import { Outlet, NavLink } from 'react-router-dom';
+import { Outlet, NavLink, useNavigate } from 'react-router-dom';
 import { FaChartBar, FaBook, FaFileAlt, FaUserCheck, FaAngleDoubleLeft, FaAngleDoubleRight, FaBars, FaBuilding, FaSync } from 'react-icons/fa';
 import { useState, useEffect } from 'react';
 import { fetchUsuariosPendientes, fetchNotificacionesUsuario } from '../services/bookService';
 import { useAuth } from '../hooks/useAuth';
-
-
+import { supabase } from '../supabase/client';
+import { useToast } from '../contexts/ToastContext';
 
 export default function AdminLayout() {
-  const { user } = useAuth();
+  const { user, isAuthenticated, loading: authLoading } = useAuth();
+  const navigate = useNavigate();
+  const { showError } = useToast();
+  const [isAdmin, setIsAdmin] = useState<boolean | null>(null);
+  const [checkingRole, setCheckingRole] = useState(true);
   // Estado global para notificaciones
   const [morososCount, setMorososCount] = useState(0);
   const [pendientesCount, setPendientesCount] = useState(0);
@@ -63,6 +67,89 @@ export default function AdminLayout() {
 
   const [collapsed, setCollapsed] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+
+  // Verificar rol de administrador desde la base de datos
+  useEffect(() => {
+    const verifyAdminRole = async () => {
+      // Si no está autenticado, redirigir a login
+      if (!authLoading && !isAuthenticated) {
+        navigate('/login');
+        return;
+      }
+
+      // Si no hay usuario, esperar o redirigir
+      if (!user || !user.id) {
+        if (!authLoading) {
+          navigate('/login');
+        }
+        return;
+      }
+
+      try {
+        setCheckingRole(true);
+        
+        // Verificar rol directamente desde la base de datos
+        // Esto asegura que siempre consultamos la fuente de verdad
+        const { data: usuario, error } = await supabase
+          .from('usuarios')
+          .select('id, rol')
+          .eq('id', user.id)
+          .single();
+
+        if (error) {
+          console.error('Error verificando rol de admin:', error);
+          setIsAdmin(false);
+          showError('Error al verificar permisos. Intenta iniciar sesión nuevamente.');
+          navigate('/', { replace: true });
+          return;
+        }
+
+        // Verificar si el rol es 'admin' (case-insensitive)
+        const userRole = usuario?.rol?.toLowerCase();
+        const isUserAdmin = userRole === 'admin';
+
+        if (!isUserAdmin) {
+          console.warn('Acceso denegado: Usuario no es administrador. Rol actual:', usuario?.rol);
+          setIsAdmin(false);
+          // Mostrar mensaje de error
+          showError('No tienes permisos para acceder al panel de administración. Solo los administradores pueden acceder a esta sección.');
+          // Redirigir a la página principal
+          navigate('/', { replace: true });
+          return;
+        }
+
+        // Usuario es admin
+        setIsAdmin(true);
+      } catch (error: any) {
+        console.error('Error al verificar rol de administrador:', error);
+        setIsAdmin(false);
+        showError('Error al verificar permisos de administrador.');
+        navigate('/', { replace: true });
+      } finally {
+        setCheckingRole(false);
+      }
+    };
+
+    verifyAdminRole();
+  }, [user, isAuthenticated, authLoading, navigate, showError]);
+
+  // Mostrar loading mientras se verifica
+  if (authLoading || checkingRole || isAdmin === null) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto"></div>
+          <p className="mt-4 text-gray-600">Verificando permisos de administrador...</p>
+          <p className="mt-2 text-sm text-gray-500">Consultando base de datos...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Si no es admin, no mostrar contenido (ya se redirigió)
+  if (!isAdmin) {
+    return null;
+  }
 
   return (
     <div className="min-h-screen bg-gray-50 flex">

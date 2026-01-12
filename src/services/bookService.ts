@@ -214,16 +214,18 @@ export const registerResidente = async (userData: {
     const rolMapeado = userData.rol === null ? null : (typeof userData.rol === 'string' ? mapearRol(userData.rol) : userData.rol);
     
     // 1. Crear usuario
-    // IMPORTANTE: Nuevos usuarios NO deben tener pagos automáticos
-    // El estado se establece como 'Activo' y los pagos deben ser creados solo por administradores
+    // IMPORTANTE: Solo insertar campos que existen en la tabla usuarios según el esquema SQL
+    // Campos válidos: nombre, correo, telefono, cedula, rol, contraseña, condominio_id, estado
+    // auth_uid, created_at, updated_at se generan automáticamente
+    // preguntas_seguridad NO existe en la tabla usuarios
     const insertData: any = {
       nombre: userData.nombre,
       correo: userData.correo,
-      telefono: userData.telefono,
-      cedula: userData.cedula,
+      telefono: userData.telefono || null,
+      cedula: userData.cedula || null,
       rol: rolMapeado,
       contraseña: userData.contraseña,
-      condominio_id: userData.condominio_id,
+      condominio_id: userData.condominio_id || null,
       estado: 'Activo' // Asegurar que usuarios nuevos estén activos (sin deudas)
     };
     
@@ -232,10 +234,8 @@ export const registerResidente = async (userData: {
       insertData.auth_uid = userData.auth_uid;
     }
 
-    // Incluir preguntas de seguridad si se proporcionan
-    if (userData.preguntas_seguridad) {
-      insertData.preguntas_seguridad = userData.preguntas_seguridad;
-    }
+    // NOTA: preguntas_seguridad NO existe en la tabla usuarios según el esquema SQL
+    // Si se necesita almacenar preguntas de seguridad, debe hacerse en otra tabla
     
     const { data: usuario, error: userError } = await supabase
       .from('usuarios')
@@ -1423,17 +1423,86 @@ export const loginUsuario = async (correo: string, contraseña: string) => {
 };
 
 // Función para obtener todos los condominios
+// Obtener condominios con conteo de viviendas
 export const fetchCondominios = async () => {
   try {
-    const { data, error } = await supabase
+    const { data: condominios, error } = await supabase
       .from('condominios')
       .select('*')
       .order('nombre');
 
     if (error) throw error;
-    return data || [];
+
+    // Para cada condominio, contar las viviendas asociadas
+    const condominiosConViviendas = await Promise.all(
+      (condominios || []).map(async (condominio) => {
+        const { count, error: countError } = await supabase
+          .from('viviendas')
+          .select('*', { count: 'exact', head: true })
+          .eq('condominio_id', condominio.id);
+
+        if (countError) {
+          console.warn(`Error contando viviendas para condominio ${condominio.id}:`, countError);
+          return { ...condominio, numero_viviendas: 0 };
+        }
+
+        return { ...condominio, numero_viviendas: count || 0 };
+      })
+    );
+
+    return condominiosConViviendas;
   } catch (error) {
     console.error('Error en fetchCondominios:', error);
+    throw error;
+  }
+};
+
+// Buscar condominio por nombre (case-insensitive) o crearlo si no existe
+export const buscarOCrearCondominio = async (nombreCondominio: string): Promise<number> => {
+  try {
+    if (!nombreCondominio || !nombreCondominio.trim()) {
+      throw new Error('El nombre del condominio es requerido');
+    }
+
+    const nombreLimpio = nombreCondominio.trim();
+
+    // Buscar condominio existente por nombre (case-insensitive)
+    const { data: condominioExistente, error: searchError } = await supabase
+      .from('condominios')
+      .select('id, nombre')
+      .ilike('nombre', nombreLimpio) // Case-insensitive search
+      .maybeSingle();
+
+    if (searchError && searchError.code !== 'PGRST116') { // PGRST116 = no rows found
+      throw searchError;
+    }
+
+    // Si existe, retornar su ID
+    if (condominioExistente) {
+      console.log(`✅ Condominio encontrado: "${condominioExistente.nombre}" (ID: ${condominioExistente.id})`);
+      return condominioExistente.id;
+    }
+
+    // Si no existe, crear uno nuevo
+    console.log(`📝 Creando nuevo condominio: "${nombreLimpio}"`);
+    const { data: nuevoCondominio, error: createError } = await supabase
+      .from('condominios')
+      .insert([{
+        nombre: nombreLimpio,
+        direccion: null,
+        estado: 'Activo',
+        telefono: null
+      }])
+      .select('id')
+      .single();
+
+    if (createError) throw createError;
+    if (!nuevoCondominio) throw new Error('No se pudo crear el condominio');
+
+    console.log(`✅ Condominio creado: "${nombreLimpio}" (ID: ${nuevoCondominio.id})`);
+    return nuevoCondominio.id;
+  } catch (error) {
+    console.error('Error en buscarOCrearCondominio:', error);
     throw error;
   }
 };
@@ -1441,6 +1510,10 @@ export const fetchCondominios = async () => {
 // ==================== CRUD DE CONDOMINIOS ====================
 
 // Crear nuevo condominio
+// IMPORTANTE: Solo incluir campos que existen en el esquema de la BD
+// Campos según esquema: id (auto), nombre (requerido), direccion (opcional), 
+// estado (opcional), telefono (opcional), created_at (auto), updated_at (auto)
+// NO incluir created_at ni updated_at - se generan automáticamente por la BD
 export const crearCondominio = async (data: {
   nombre: string;
   direccion?: string | null;
@@ -1448,15 +1521,16 @@ export const crearCondominio = async (data: {
   telefono?: string | null;
 }) => {
   try {
+    // Solo insertar los campos que el usuario puede proporcionar
+    // created_at y updated_at se generan automáticamente por la BD con DEFAULT CURRENT_TIMESTAMP
     const { data: condominio, error } = await supabase
       .from('condominios')
       .insert([{
         nombre: data.nombre,
         direccion: data.direccion || null,
         estado: data.estado || null,
-        telefono: data.telefono || null,
-        created_at: getCurrentLocalISOString(),
-        updated_at: getCurrentLocalISOString()
+        telefono: data.telefono || null
+        // NO incluir created_at ni updated_at - la BD los genera automáticamente
       }])
       .select()
       .single();
@@ -1470,6 +1544,8 @@ export const crearCondominio = async (data: {
 };
 
 // Editar condominio
+// IMPORTANTE: Solo actualizar campos que existen en el esquema
+// updated_at se actualiza automáticamente por el trigger de la BD
 export const editarCondominio = async (
   id: number,
   data: {
@@ -1480,14 +1556,15 @@ export const editarCondominio = async (
   }
 ) => {
   try {
-    const updateData: any = {
-      updated_at: getCurrentLocalISOString()
-    };
-
+    // Construir objeto de actualización solo con campos permitidos
+    const updateData: any = {};
+    
     if (data.nombre !== undefined) updateData.nombre = data.nombre;
     if (data.direccion !== undefined) updateData.direccion = data.direccion;
     if (data.estado !== undefined) updateData.estado = data.estado;
     if (data.telefono !== undefined) updateData.telefono = data.telefono;
+    
+    // NO incluir updated_at manualmente - el trigger de la BD lo actualiza automáticamente
 
     const { data: condominio, error } = await supabase
       .from('condominios')

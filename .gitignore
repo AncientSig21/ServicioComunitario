@@ -5,7 +5,8 @@ yarn-debug.log*
 yarn-error.log*
 
 # Environment variables
-.env
+# Note: .env is NOT ignored - it should be committed for project configuration
+!.env
 .env.local
 .env.development.local
 .env.test.local

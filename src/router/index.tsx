@@ -14,6 +14,7 @@ import AdminAprobacionesPage from '../pages/AdminAprobacionesPage';
 import AdminCondominiosPage from '../pages/AdminCondominiosPage';
 import AdminMantenimientoPage from '../pages/AdminMantenimientoPage';
 import { ProtectedRoute } from '../components/shared/ProtectedRoute';
+import { AdminProtectedRoute } from '../components/shared/AdminProtectedRoute';
 
 export const router = createBrowserRouter([
   {
@@ -87,9 +88,9 @@ export const router = createBrowserRouter([
       {
         path: 'admin',
         element: (
-          <ProtectedRoute>
+          <AdminProtectedRoute>
             <AdminLayout />
-          </ProtectedRoute>
+          </AdminProtectedRoute>
         ),
         children: [
           {

@@ -158,12 +158,10 @@ export const useAuth = () => {
     if (!user || !supabase) return;
 
     try {
-      // La tabla usuarios no tiene campo 'estado' en el esquema actual
-      // Si necesitas verificar el estado, deberías hacerlo a través de pagos vencidos
-      // Por ahora, solo actualizamos la información básica del usuario
+      // Actualizar la información del usuario incluyendo el estado
       const { data, error } = await supabase
         .from('usuarios')
-        .select('id, nombre, correo, rol, condominio_id')
+        .select('id, nombre, correo, rol, condominio_id, estado')
         .eq('id', user.id)
         .single();
 

@@ -10,6 +10,7 @@ interface Condominio {
   telefono: string | null;
   created_at: string | null;
   updated_at: string | null;
+  numero_viviendas?: number; // Número de viviendas que componen el condominio
 }
 
 const AdminCondominiosPage = () => {
@@ -21,12 +22,9 @@ const AdminCondominiosPage = () => {
   const [showModal, setShowModal] = useState(false);
   const [error, setError] = useState<string | null>(null);
   
-  // Estados para formulario
+  // Estados para formulario - Solo nombre es necesario
   const [formData, setFormData] = useState({
-    nombre: '',
-    direccion: '',
-    estado: '',
-    telefono: ''
+    nombre: ''
   });
 
   // Estados para paginación y filtros
@@ -88,25 +86,20 @@ const AdminCondominiosPage = () => {
 
     try {
       if (editingId) {
-        // Editar
+        // Editar - Solo nombre
         await editarCondominio(editingId, {
-          nombre: formData.nombre,
-          direccion: formData.direccion || null,
-          estado: formData.estado || null,
-          telefono: formData.telefono || null
+          nombre: formData.nombre
         });
       } else {
-        // Crear
+        // Crear - Solo nombre, estado por defecto 'Activo'
         await crearCondominio({
           nombre: formData.nombre,
-          direccion: formData.direccion || null,
-          estado: formData.estado || null,
-          telefono: formData.telefono || null
+          estado: 'Activo'
         });
       }
 
       // Limpiar formulario y cerrar modal
-      setFormData({ nombre: '', direccion: '', estado: '', telefono: '' });
+      setFormData({ nombre: '' });
       setEditingId(null);
       setShowModal(false);
       await cargarCondominios();
@@ -119,10 +112,7 @@ const AdminCondominiosPage = () => {
   // Iniciar edición
   const handleEdit = (condominio: Condominio) => {
     setFormData({
-      nombre: condominio.nombre,
-      direccion: condominio.direccion || '',
-      estado: condominio.estado || '',
-      telefono: condominio.telefono || ''
+      nombre: condominio.nombre
     });
     setEditingId(condominio.id);
     setShowModal(true);
@@ -130,7 +120,7 @@ const AdminCondominiosPage = () => {
 
   // Cancelar edición/creación
   const handleCancel = () => {
-    setFormData({ nombre: '', direccion: '', estado: '', telefono: '' });
+    setFormData({ nombre: '' });
     setEditingId(null);
     setShowModal(false);
     setError(null);
@@ -206,16 +196,14 @@ const AdminCondominiosPage = () => {
             <thead className="bg-gray-50">
               <tr>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Nombre</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Dirección</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Estado</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Teléfono</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Número de Viviendas</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Acciones</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-200">
               {currentCondominios.length === 0 ? (
                 <tr>
-                  <td colSpan={5} className="px-4 py-8 text-center text-gray-500">
+                  <td colSpan={3} className="px-4 py-8 text-center text-gray-500">
                     {searchQuery ? 'No se encontraron condominios' : 'No hay condominios registrados'}
                   </td>
                 </tr>
@@ -223,9 +211,11 @@ const AdminCondominiosPage = () => {
                 currentCondominios.map((condominio) => (
                   <tr key={condominio.id} className="hover:bg-gray-50">
                     <td className="px-4 py-3 text-sm font-medium">{condominio.nombre}</td>
-                    <td className="px-4 py-3 text-sm">{condominio.direccion || 'N/A'}</td>
-                    <td className="px-4 py-3 text-sm">{condominio.estado || 'N/A'}</td>
-                    <td className="px-4 py-3 text-sm">{condominio.telefono || 'N/A'}</td>
+                    <td className="px-4 py-3 text-sm text-center">
+                      <span className="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-blue-100 text-blue-800">
+                        {condominio.numero_viviendas || 0}
+                      </span>
+                    </td>
                     <td className="px-4 py-3">
                       <div className="flex gap-2">
                         <button
@@ -291,48 +281,19 @@ const AdminCondominiosPage = () => {
               <div className="space-y-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Nombre <span className="text-red-500">*</span>
+                    Nombre del Condominio <span className="text-red-500">*</span>
                   </label>
                   <input
                     type="text"
                     value={formData.nombre}
                     onChange={(e) => setFormData({ ...formData, nombre: e.target.value })}
                     className="w-full border p-2 rounded"
+                    placeholder="Ej: San Martín, Los Rosales, etc."
                     required
                   />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Dirección
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.direccion}
-                    onChange={(e) => setFormData({ ...formData, direccion: e.target.value })}
-                    className="w-full border p-2 rounded"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Estado
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.estado}
-                    onChange={(e) => setFormData({ ...formData, estado: e.target.value })}
-                    className="w-full border p-2 rounded"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Teléfono
-                  </label>
-                  <input
-                    type="tel"
-                    value={formData.telefono}
-                    onChange={(e) => setFormData({ ...formData, telefono: e.target.value })}
-                    className="w-full border p-2 rounded"
-                  />
+                  <p className="text-xs text-gray-500 mt-1">
+                    El número de viviendas se calculará automáticamente
+                  </p>
                 </div>
               </div>
               <div className="flex gap-3 mt-6">

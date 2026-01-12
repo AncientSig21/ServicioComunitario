@@ -2,9 +2,9 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { validation } from '../utils/validation';
 import { PasswordInput } from '../components/shared/PasswordInput';
-import { registerResidente, fetchCondominios, fetchViviendas, notificarRegistroUsuario } from '../services/bookService';
+import { registerResidente, fetchCondominios, fetchViviendas, notificarRegistroUsuario, buscarOCrearCondominio } from '../services/bookService';
 import { supabase } from '../supabase/client';
-import { hashAnswer } from '../utils/securityUtils';
+// import { hashAnswer } from '../utils/securityUtils'; // No se usa - preguntas de seguridad no se almacenan
 
 // Roles válidos para registro público (admin no está disponible)
 const rolesValidos = [
@@ -43,6 +43,7 @@ export const RegisterPage = () => {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [rol, setRol] = useState<string>('propietario');
   const [condominioId, setCondominioId] = useState<number | null>(null);
+  const [nombreCondominio, setNombreCondominio] = useState<string>(''); // Nombre del condominio a buscar/crear
   const [viviendaId, setViviendaId] = useState<number | null>(null);
   const [numeroApartamento, setNumeroApartamento] = useState('');
   const [crearNuevaVivienda, setCrearNuevaVivienda] = useState(false);
@@ -160,23 +161,9 @@ export const RegisterPage = () => {
     const confirmPasswordError = validation.getConfirmPasswordError(password, confirmPassword);
     if (confirmPasswordError) newErrors.confirmPassword = confirmPasswordError;
 
-    // Validar preguntas de seguridad
-    let preguntasValidas = 0;
-    preguntasSeguridad.forEach((pregunta, index) => {
-      if (!pregunta.preguntaId) {
-        newErrors[`pregunta${index}`] = 'Debes seleccionar una pregunta';
-      } else if (pregunta.preguntaId === 'personalizada' && !pregunta.preguntaPersonalizada.trim()) {
-        newErrors[`pregunta${index}`] = 'Debes escribir tu pregunta personalizada';
-      } else if (!pregunta.respuesta.trim()) {
-        newErrors[`respuesta${index}`] = 'Debes proporcionar una respuesta';
-      } else {
-        preguntasValidas++;
-      }
-    });
-
-    if (preguntasValidas < 2) {
-      newErrors.preguntas = 'Debes establecer al menos 2 preguntas de seguridad';
-    }
+    // NOTA: Las preguntas de seguridad son opcionales ya que no se almacenan
+    // en la tabla usuarios según el esquema SQL actual
+    // Se mantiene el formulario para futura implementación si se crea una tabla separada
 
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
@@ -229,14 +216,24 @@ export const RegisterPage = () => {
     try {
       // auth_uid se generará automáticamente en la base de datos
       let viviendaIdFinal: number | null = null;
+      let condominioIdFinal: number | null = null;
+
+      // Si se proporcionó nombre de condominio, buscar o crear
+      if (nombreCondominio && nombreCondominio.trim()) {
+        condominioIdFinal = await buscarOCrearCondominio(nombreCondominio.trim());
+        console.log(`✅ Condominio encontrado/creado: "${nombreCondominio}" (ID: ${condominioIdFinal})`);
+      } else if (condominioId) {
+        // Si se seleccionó condominio del dropdown (compatibilidad)
+        condominioIdFinal = condominioId;
+      }
 
       // Si hay condominio, obtener o crear vivienda
-      if (condominioId) {
+      if (condominioIdFinal) {
         if (crearNuevaVivienda) {
           if (!numeroApartamento.trim()) {
             throw new Error('El número de apartamento es requerido');
           }
-          viviendaIdFinal = await obtenerOCrearVivienda(numeroApartamento.trim(), condominioId);
+          viviendaIdFinal = await obtenerOCrearVivienda(numeroApartamento.trim(), condominioIdFinal);
         } else if (viviendaId) {
           viviendaIdFinal = viviendaId;
         } else {
@@ -244,15 +241,16 @@ export const RegisterPage = () => {
         }
       }
 
-        // Preparar preguntas de seguridad
-        const preguntasSeguridadData = await prepararPreguntasSeguridad();
+        // NOTA: Las preguntas de seguridad no se almacenan en la tabla usuarios
+        // según el esquema SQL proporcionado. Si se necesita esta funcionalidad,
+        // se debe crear una tabla separada para preguntas de seguridad.
 
         // Si no hay vivienda, registrar como usuario simple
       if (!viviendaIdFinal) {
         // Registrar usuario simple (sin vivienda) - PENDIENTE DE APROBACIÓN
-        // IMPORTANTE: Nuevos usuarios NO deben tener pagos automáticos
-        // El estado se establece como 'Activo' y los pagos deben ser creados solo por administradores
-        // El rol se establecerá como null para indicar que está pendiente
+        // IMPORTANTE: Solo insertar campos que existen en la tabla usuarios según el esquema SQL
+        // Campos válidos: nombre, correo, telefono, cedula, rol, contraseña, condominio_id, estado
+        // auth_uid, created_at, updated_at se generan automáticamente
         const { data: usuario, error: userError } = await supabase
           .from('usuarios')
           .insert([{
@@ -260,12 +258,13 @@ export const RegisterPage = () => {
             correo: email,
             telefono: telefono || null,
             cedula: cedula || null,
-            rol: null, // Pendiente de aprobación del administrador
+            rol: null, // Pendiente de aprobación del administrador (default es 'residente' pero lo dejamos null)
             contraseña: password,
             estado: 'Activo', // Estado inicial: Activo (sin deudas, sin pagos pendientes)
+            condominio_id: condominioIdFinal || null
             // auth_uid se genera automáticamente en la BD
-            condominio_id: condominioId,
-            preguntas_seguridad: preguntasSeguridadData
+            // created_at y updated_at se generan automáticamente
+            // preguntas_seguridad NO existe en la tabla usuarios, se debe manejar en otra tabla si es necesario
           }])
           .select()
           .single();
@@ -285,6 +284,7 @@ export const RegisterPage = () => {
       } else {
         // Registrar residente completo (con vivienda) - PENDIENTE DE APROBACIÓN
         // El rol se establecerá como null para indicar que está pendiente
+        // NOTA: preguntas_seguridad no se incluye porque no existe en la tabla usuarios
         const usuario = await registerResidente({
           nombre,
           correo: email,
@@ -293,10 +293,10 @@ export const RegisterPage = () => {
           rol: null, // Pendiente de aprobación - se establecerá después
           contraseña: password,
           // auth_uid se genera automáticamente en la BD
-          condominio_id: condominioId,
+          condominio_id: condominioIdFinal,
           vivienda_id: viviendaIdFinal,
-          rol_en_vivienda: rolEnVivienda,
-          preguntas_seguridad: preguntasSeguridadData
+          rol_en_vivienda: rolEnVivienda
+          // preguntas_seguridad no existe en la tabla usuarios según el esquema SQL
         });
 
         // Notificar a los administradores sobre el nuevo registro
@@ -324,30 +324,9 @@ export const RegisterPage = () => {
     }
   };
 
-  // Función para preparar las preguntas de seguridad para guardar
-  const prepararPreguntasSeguridad = async () => {
-    const preguntas = [];
-    
-    for (const pregunta of preguntasSeguridad) {
-      if (!pregunta.preguntaId && !pregunta.preguntaPersonalizada) continue;
-      if (!pregunta.respuesta.trim()) continue;
-
-      const preguntaTexto = pregunta.preguntaId === 'personalizada' 
-        ? pregunta.preguntaPersonalizada 
-        : preguntasPredefinidas.find(p => p.id === pregunta.preguntaId)?.texto || pregunta.preguntaId;
-      
-      const respuestaHash = await hashAnswer(pregunta.respuesta);
-      
-      preguntas.push({
-        pregunta: preguntaTexto,
-        respuesta_hash: respuestaHash,
-        tipo: pregunta.preguntaId === 'personalizada' ? 'personalizada' : 'predefinida',
-        created_at: new Date().toISOString()
-      });
-    }
-
-    return preguntas.length > 0 ? { preguntas } : null;
-  };
+  // NOTA: Función deshabilitada - Las preguntas de seguridad no se almacenan
+  // en la tabla usuarios según el esquema SQL actual
+  // const prepararPreguntasSeguridad = async () => { ... }
 
   // Manejar cambio en preguntas de seguridad
   const handlePreguntaChange = (index: number, field: string, value: string) => {
@@ -478,29 +457,53 @@ export const RegisterPage = () => {
           
           <div className="space-y-4">
             <div>
-              <label className="block text-sm text-gray-600 mb-1">Condominio</label>
-              <select
-                value={condominioId || ''}
+              <label className="block text-sm text-gray-600 mb-1">
+                Condominio <span className="text-gray-400">(opcional)</span>
+              </label>
+              <input
+                type="text"
+                value={nombreCondominio}
                 onChange={e => {
-                  const value = e.target.value ? parseInt(e.target.value) : null;
-                  setCondominioId(value);
+                  setNombreCondominio(e.target.value);
+                  setCondominioId(null); // Limpiar selección de dropdown si se escribe
                   handleInputChange('condominioId');
                 }}
+                placeholder="Escribe el nombre del condominio (ej: San Martín)"
                 className="border p-2 rounded w-full"
-                disabled={loadingCondominios}
-              >
-                <option value="">Selecciona un condominio (opcional)</option>
-                {loadingCondominios ? (
-                  <option>Cargando...</option>
-                ) : (
-                  condominios.map(c => (
-                    <option key={c.id} value={c.id}>{c.nombre}</option>
-                  ))
-                )}
-              </select>
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                Si el condominio existe, se anexará automáticamente. Si no existe, se creará uno nuevo.
+              </p>
+              
+              {/* Opción alternativa: seleccionar de lista existente */}
+              <details className="mt-2">
+                <summary className="text-xs text-blue-600 cursor-pointer hover:text-blue-800">
+                  O selecciona de la lista existente
+                </summary>
+                <select
+                  value={condominioId || ''}
+                  onChange={e => {
+                    const value = e.target.value ? parseInt(e.target.value) : null;
+                    setCondominioId(value);
+                    setNombreCondominio(''); // Limpiar input si se selecciona de lista
+                    handleInputChange('condominioId');
+                  }}
+                  className="border p-2 rounded w-full mt-2"
+                  disabled={loadingCondominios}
+                >
+                  <option value="">Selecciona un condominio existente</option>
+                  {loadingCondominios ? (
+                    <option>Cargando...</option>
+                  ) : (
+                    condominios.map(c => (
+                      <option key={c.id} value={c.id}>{c.nombre}</option>
+                    ))
+                  )}
+                </select>
+              </details>
             </div>
 
-            {condominioId && (
+            {(condominioId || nombreCondominio) && (
               <>
                 <div>
                   <label className="flex items-center gap-2 mb-2">
@@ -616,11 +619,11 @@ export const RegisterPage = () => {
           </div>
         </div>
 
-        {/* Preguntas de Seguridad */}
+        {/* Preguntas de Seguridad - OPCIONAL */}
         <div>
-          <h3 className="font-semibold text-gray-700 mb-3">Preguntas de Seguridad</h3>
+          <h3 className="font-semibold text-gray-700 mb-3">Preguntas de Seguridad (Opcional)</h3>
           <p className="text-sm text-gray-600 mb-4">
-            Establece 2 preguntas de seguridad para poder recuperar tu contraseña en caso de olvidarla.
+            <span className="text-orange-600 font-medium">Nota:</span> Las preguntas de seguridad actualmente no se almacenan en el sistema. Esta funcionalidad estará disponible próximamente.
           </p>
           
           <div className="space-y-4">
@@ -657,7 +660,6 @@ export const RegisterPage = () => {
                       onChange={(e) => handlePreguntaChange(index, 'preguntaPersonalizada', e.target.value)}
                       placeholder="Ej: ¿Cuál es el nombre de tu mejor amigo de la infancia?"
                       className="w-full border border-gray-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                      required={pregunta.preguntaId === 'personalizada'}
                     />
                   </div>
                 )}
@@ -672,7 +674,6 @@ export const RegisterPage = () => {
                     onChange={(e) => handlePreguntaChange(index, 'respuesta', e.target.value)}
                     placeholder="Tu respuesta"
                     className="w-full border border-gray-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                    required
                   />
                   {errors[`respuesta${index}`] && (
                     <p className="text-red-500 text-sm mt-1">{errors[`respuesta${index}`]}</p>
