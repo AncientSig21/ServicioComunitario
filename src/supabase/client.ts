@@ -41,6 +41,10 @@ if (typeof window !== 'undefined') {
     project: "vsyunsvlrvbbvgiwcxnt",
     url: supabaseUrl.replace('https://', '').split('.')[0],
     hasAuth: !!supabase.auth,
+    hasUrl: !!supabaseUrl,
+    hasKey: !!supabaseAnonKey,
+    envUrl: import.meta.env.VITE_PROJECT_URL_SUPABASE ? 'loaded' : 'using default',
+    envKey: import.meta.env.VITE_SUPABASE_API_KEY ? 'loaded' : 'using default',
     timestamp: new Date().toISOString()
   });
 
@@ -50,7 +54,12 @@ if (typeof window !== 'undefined') {
   )
     .then(({ count, error }) => {
       if (error) {
-        console.warn("⚠️ Supabase: Error en conexión inicial", error.message);
+        console.error("❌ Supabase: Error en conexión inicial", {
+          message: error.message,
+          code: error.code,
+          details: error.details,
+          hint: error.hint
+        });
       } else {
         // Mostrar el conteo de usuarios en el mensaje
         const mensajeConConteo = count !== null && count !== undefined 
@@ -61,6 +70,10 @@ if (typeof window !== 'undefined') {
       }
     })
     .catch(err => {
-      console.warn("⚠️ Supabase: No se pudo conectar", err.message);
+      console.error("❌ Supabase: No se pudo conectar", {
+        message: err.message,
+        stack: err.stack,
+        name: err.name
+      });
     });
 }

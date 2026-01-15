@@ -225,17 +225,17 @@ export const ProfilePage = () => {
               </div>
 
               {/* Estado (solo lectura) */}
-              {user.estado && (
+              {user.Estado && (
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
                     Estado
                   </label>
                   <input
                     type="text"
-                    value={user.estado}
+                    value={user.Estado}
                     disabled
                     className={`w-full px-4 py-2 border rounded-lg bg-gray-100 cursor-not-allowed ${
-                      user.estado === 'Moroso' ? 'text-red-600' : 'text-green-600'
+                      user.Estado === 'Moroso' ? 'text-red-600' : 'text-green-600'
                     }`}
                   />
                 </div>

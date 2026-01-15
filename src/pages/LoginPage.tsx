@@ -85,7 +85,7 @@ export const LoginPage = () => {
             setEmail(e.target.value);
             handleInputChange('email');
           }}
-          className={`border p-2 rounded w-full ${errors.email ? 'border-red-500' : ''}`}
+          className={`border border-gray-300 p-2 rounded w-full bg-white text-gray-800 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${errors.email ? 'border-red-500' : ''}`}
           required
         />
         {errors.email && <p className="text-red-500 text-sm">{errors.email}</p>}

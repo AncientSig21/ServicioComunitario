@@ -152,14 +152,14 @@ const AdminResidentesPage = () => {
               placeholder="Buscar por nombre, correo, cédula o apartamento..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full border p-2 rounded"
+              className="w-full border border-gray-300 rounded-lg px-4 py-2 bg-white text-gray-800 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
             />
           </div>
           <div>
             <select
               value={filtroCondominio}
               onChange={(e) => setFiltroCondominio(e.target.value)}
-              className="w-full border p-2 rounded"
+              className="w-full border border-gray-300 rounded-lg px-4 py-2 text-gray-800 bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
             >
               <option value="">Todos los condominios</option>
               {condominios.map(condominio => (
@@ -173,7 +173,7 @@ const AdminResidentesPage = () => {
             <select
               value={filtroEstado}
               onChange={(e) => setFiltroEstado(e.target.value)}
-              className="w-full border p-2 rounded"
+              className="w-full border border-gray-300 rounded-lg px-4 py-2 text-gray-800 bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
             >
               <option value="">Todos los estados</option>
               <option value="Activo">Activo</option>
@@ -181,8 +181,8 @@ const AdminResidentesPage = () => {
               <option value="Inactivo">Inactivo</option>
             </select>
           </div>
-          <div className="text-sm text-gray-600 flex items-center">
-            Total: <span className="font-bold ml-2">{filteredResidentes.length}</span> residentes
+          <div className="text-sm text-gray-700 flex items-center">
+            Total: <span className="font-bold ml-2 text-gray-800">{filteredResidentes.length}</span> residentes
           </div>
         </div>
       </div>
@@ -212,11 +212,11 @@ const AdminResidentesPage = () => {
               ) : (
                 currentResidentes.map((residente) => (
                   <tr key={residente.id} className="hover:bg-gray-50">
-                    <td className="px-4 py-3 text-sm font-medium">{residente.nombre}</td>
-                    <td className="px-4 py-3 text-sm">{residente.correo || 'N/A'}</td>
-                    <td className="px-4 py-3 text-sm">{residente.cedula || 'N/A'}</td>
-                    <td className="px-4 py-3 text-sm">{getCondominioNombre(residente)}</td>
-                    <td className="px-4 py-3 text-sm">{getApartamento(residente)}</td>
+                    <td className="px-4 py-3 text-sm font-medium text-gray-800">{residente.nombre}</td>
+                    <td className="px-4 py-3 text-sm text-gray-700">{residente.correo || 'N/A'}</td>
+                    <td className="px-4 py-3 text-sm text-gray-700">{residente.cedula || 'N/A'}</td>
+                    <td className="px-4 py-3 text-sm text-gray-700">{getCondominioNombre(residente)}</td>
+                    <td className="px-4 py-3 text-sm text-gray-700">{getApartamento(residente)}</td>
                     <td className="px-4 py-3 text-sm">
                       <span className={`px-2 py-1 rounded text-xs ${
                         residente.rol === 'admin' ? 'bg-purple-500 text-white' :

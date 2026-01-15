@@ -20,6 +20,7 @@ export const Footer = () => {
 
 				<nav className='flex flex-col gap-2 text-xs font-medium'>
 					<Link to='/anuncios'>Anuncios</Link>
+					<Link to='/foro'>Foro</Link>
 					<Link to='/tesis'>Servicios</Link>
 				</nav>
 			</div>

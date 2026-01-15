@@ -1,7 +1,7 @@
 import { Outlet, NavLink, useNavigate } from 'react-router-dom';
-import { FaChartBar, FaBook, FaFileAlt, FaUserCheck, FaAngleDoubleLeft, FaAngleDoubleRight, FaBars, FaBuilding, FaSync } from 'react-icons/fa';
+import { FaChartBar, FaBook, FaFileAlt, FaUserCheck, FaAngleDoubleLeft, FaAngleDoubleRight, FaBars, FaBuilding, FaSync, FaDollarSign, FaCheckCircle } from 'react-icons/fa';
 import { useState, useEffect } from 'react';
-import { fetchUsuariosPendientes, fetchNotificacionesUsuario } from '../services/bookService';
+import { fetchUsuariosPendientes, fetchNotificacionesUsuario, fetchPagos } from '../services/bookService';
 import { useAuth } from '../hooks/useAuth';
 import { supabase } from '../supabase/client';
 import { useToast } from '../contexts/ToastContext';
@@ -15,7 +15,9 @@ export default function AdminLayout() {
   // Estado global para notificaciones
   const [morososCount, setMorososCount] = useState(0);
   const [pendientesCount, setPendientesCount] = useState(0);
+  const [completadosCount, setCompletadosCount] = useState(0);
   const [usuariosPendientesCount, setUsuariosPendientesCount] = useState(0);
+  const [pagosPendientesCount, setPagosPendientesCount] = useState(0);
 
   // Cargar contadores de notificaciones
   useEffect(() => {
@@ -37,6 +39,38 @@ export default function AdminLayout() {
       if (user?.id) {
         const notificaciones = await fetchNotificacionesUsuario(user.id, false);
         setPendientesCount(notificaciones.filter(n => n.tipo === 'solicitud_registro').length);
+        
+        // Contar pagos pendientes de validación (con comprobante)
+        try {
+          const pagosPendientes = await fetchPagos({ estado: 'pendiente' });
+          const pagosConComprobante = pagosPendientes.filter((pago: any) => pago.comprobante_archivo_id !== null);
+          setPagosPendientesCount(pagosConComprobante.length);
+        } catch (error) {
+          console.warn('Error contando pagos pendientes:', error);
+        }
+      }
+
+      // Calcular contadores de reportes desde localStorage (mock database)
+      try {
+        const MOCK_DB_KEY = 'mockDatabase_condominio';
+        const stored = localStorage.getItem(MOCK_DB_KEY);
+        if (stored) {
+          const db = JSON.parse(stored);
+          const reportes = db.reportes || [];
+          
+          // Contar morosos (tipo morosidad y estado vencido)
+          const morosos = reportes.filter((r: any) => r.tipo === 'morosidad' && r.estado === 'vencido').length;
+          setMorososCount(morosos);
+          
+          // Contar pendientes de reportes
+          const pendientesReportes = reportes.filter((r: any) => r.estado === 'pendiente').length;
+          
+          // Contar completados
+          const completados = reportes.filter((r: any) => r.estado === 'completado').length;
+          setCompletadosCount(completados);
+        }
+      } catch (error) {
+        console.warn('Error cargando contadores de reportes desde localStorage:', error);
       }
     } catch (error) {
       console.error('Error cargando contadores:', error);
@@ -51,6 +85,9 @@ export default function AdminLayout() {
     cargarContadores();
   };
 
+  // Calcular total de notificaciones de reportes
+  const reportesTotalCount = morososCount + completadosCount;
+  
   const adminLinks = [
     { to: '/admin', label: 'Estadísticas', icon: <FaChartBar />, end: true },
     { to: '/admin/residentes', label: 'Residentes', icon: <FaBook /> },
@@ -61,8 +98,15 @@ export default function AdminLayout() {
       notis: { count: usuariosPendientesCount } 
     },
     { to: '/admin/condominios', label: 'Condominios', icon: <FaBuilding /> },
-    { to: '/admin/reportes', label: 'Reportes', icon: <FaFileAlt />, notis: { morosos: morososCount, pendientes: pendientesCount } },
+    { to: '/admin/reportes', label: 'Reportes', icon: <FaFileAlt />, notis: { total: reportesTotalCount } },
     { to: '/admin/mantenimiento', label: 'Mantenimiento', icon: <FaSync /> },
+    { to: '/admin/pagos', label: 'Crear Pagos', icon: <FaDollarSign /> },
+    { 
+      to: '/admin/validar-pagos', 
+      label: 'Validar Pagos', 
+      icon: <FaCheckCircle />,
+      notis: { count: pagosPendientesCount }
+    },
   ];
 
   const [collapsed, setCollapsed] = useState(false);
@@ -207,7 +251,7 @@ export default function AdminLayout() {
               end={link.end}
               className={({ isActive }) =>
                 `flex items-center gap-3 px-4 py-3 rounded-lg text-base font-medium transition-all whitespace-nowrap overflow-hidden ${
-                  isActive ? 'bg-blue-600 text-white shadow-md' : 'text-gray-700 hover:bg-blue-100 hover:shadow-sm'
+                  isActive ? 'bg-blue-600 text-white shadow-md' : 'text-gray-800 bg-gray-50 hover:bg-blue-100 hover:shadow-sm'
                 } ${collapsed ? 'justify-center' : ''}`
               }
               onClick={() => setMobileMenuOpen(false)}
@@ -225,25 +269,26 @@ export default function AdminLayout() {
                   </span>
                 </span>
               )}
-              {/* Contador de notificaciones para reportes */}
-              {link.to === '/admin/reportes' && link.notis && !collapsed && (
-                <span className="flex gap-1 ml-auto">
-                  {link.notis.morosos > 0 && (
-                    <span
-                      title="Usuarios morosos"
-                      className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-red-500 border-2 border-white text-white text-xs font-bold"
-                    >
-                      {link.notis.morosos}
-                    </span>
-                  )}
-                  {link.notis.pendientes > 0 && (
-                    <span
-                      title="Pedidos por responder"
-                      className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-yellow-400 border-2 border-white text-gray-800 text-xs font-bold"
-                    >
-                      {link.notis.pendientes}
-                    </span>
-                  )}
+              {/* Contador de notificaciones para reportes - Círculo amarillo con total */}
+              {link.to === '/admin/reportes' && link.notis && !collapsed && link.notis.total > 0 && (
+                <span className="ml-auto">
+                  <span
+                    title={`${link.notis.total} notificaciones en reportes`}
+                    className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-yellow-500 border-2 border-white text-white text-xs font-bold"
+                  >
+                    {link.notis.total}
+                  </span>
+                </span>
+              )}
+              {/* Contador de notificaciones para validar pagos */}
+              {link.to === '/admin/validar-pagos' && link.notis && !collapsed && link.notis.count > 0 && (
+                <span className="ml-auto">
+                  <span
+                    title={`${link.notis.count} pagos pendientes de validación`}
+                    className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-yellow-500 border-2 border-white text-white text-xs font-bold"
+                  >
+                    {link.notis.count}
+                  </span>
                 </span>
               )}
             </NavLink>

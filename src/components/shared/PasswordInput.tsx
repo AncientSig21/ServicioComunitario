@@ -31,7 +31,7 @@ export const PasswordInput: React.FC<PasswordInputProps> = ({
         placeholder={placeholder}
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className={`border p-2 rounded w-full pr-10 ${error ? 'border-red-500' : ''} ${className}`}
+        className={`border border-gray-300 p-2 rounded w-full pr-10 bg-white text-gray-800 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${error ? 'border-red-500' : ''} ${className}`}
         required={required}
       />
       <button

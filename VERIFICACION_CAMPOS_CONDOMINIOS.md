@@ -99,3 +99,7 @@ WITH CHECK (is_admin(get_current_user_id()));
 Los campos utilizados al agregar un condominio coinciden exactamente con el esquema de la base de datos, y Row Level Security está correctamente configurado y funcionando.
 
 
+
+
+
+

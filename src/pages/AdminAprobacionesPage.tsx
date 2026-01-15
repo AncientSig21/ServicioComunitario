@@ -88,10 +88,11 @@ const AdminAprobacionesPage = () => {
       return;
     }
 
-    if (!motivoRechazo.trim()) {
-      alert('Por favor, proporciona un motivo para el rechazo');
-      return;
-    }
+    // El motivo es opcional, pero recomendado
+    // if (!motivoRechazo.trim()) {
+    //   alert('Por favor, proporciona un motivo para el rechazo');
+    //   return;
+    // }
 
     try {
       setProcesandoId(usuarioRechazoId);
@@ -144,14 +145,14 @@ const AdminAprobacionesPage = () => {
   }
 
   return (
-    <div className="max-w-7xl mx-auto">
+    <div className="max-w-7xl mx-auto p-4 lg:p-6">
       <div className="flex justify-between items-center mb-6">
         <h1 className="text-2xl lg:text-3xl font-bold text-gray-800">
           Aprobación de Usuarios
         </h1>
         <button
           onClick={cargarUsuariosPendientes}
-          className="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600 transition-colors"
+          className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium shadow-sm"
         >
           Actualizar
         </button>
@@ -163,20 +164,20 @@ const AdminAprobacionesPage = () => {
           <p className="text-lg text-gray-600">No hay usuarios pendientes de aprobación</p>
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8">
           {usuariosPendientes.map((usuario) => (
             <div
               key={usuario.id}
-              className="bg-white rounded-lg shadow-md p-6 border-l-4 border-yellow-500"
+              className="bg-white rounded-lg shadow-md p-6 border-l-4 border-yellow-500 flex flex-col"
             >
-              <div className="flex items-start justify-between mb-4">
-                <div className="flex items-center space-x-3">
-                  <div className="bg-yellow-100 rounded-full p-3">
+              <div className="flex items-start justify-between mb-4 flex-shrink-0">
+                <div className="flex items-center space-x-3 flex-1 min-w-0">
+                  <div className="bg-yellow-100 rounded-full p-3 flex-shrink-0">
                     <FaUser className="text-yellow-600" />
                   </div>
-                  <div>
-                    <h3 className="font-bold text-lg text-gray-800">{usuario.nombre}</h3>
-                    <p className="text-sm text-gray-500">
+                  <div className="min-w-0 flex-1">
+                    <h3 className="font-bold text-lg text-gray-800 break-words">{usuario.nombre}</h3>
+                    <p className="text-sm text-gray-500 break-words">
                       {new Date(usuario.created_at || '').toLocaleDateString('es-ES', {
                         year: 'numeric',
                         month: 'long',
@@ -187,43 +188,43 @@ const AdminAprobacionesPage = () => {
                     </p>
                   </div>
                 </div>
-                <span className="bg-yellow-100 text-yellow-800 text-xs font-semibold px-2 py-1 rounded">
+                <span className="bg-yellow-100 text-yellow-800 text-xs font-semibold px-2 py-1 rounded flex-shrink-0 ml-2">
                   Pendiente
                 </span>
               </div>
 
-              <div className="space-y-2 mb-4">
+              <div className="space-y-2 mb-4 flex-1 min-w-0">
                 {usuario.correo && (
-                  <div className="flex items-center text-sm text-gray-600">
-                    <FaEnvelope className="mr-2 text-gray-400" />
-                    <span>{usuario.correo}</span>
+                  <div className="flex items-start text-sm text-gray-600 min-w-0">
+                    <FaEnvelope className="mr-2 text-gray-400 flex-shrink-0 mt-0.5" />
+                    <span className="break-words min-w-0">{usuario.correo}</span>
                   </div>
                 )}
                 {usuario.telefono && (
-                  <div className="flex items-center text-sm text-gray-600">
-                    <FaPhone className="mr-2 text-gray-400" />
-                    <span>{usuario.telefono}</span>
+                  <div className="flex items-start text-sm text-gray-600 min-w-0">
+                    <FaPhone className="mr-2 text-gray-400 flex-shrink-0 mt-0.5" />
+                    <span className="break-words min-w-0">{usuario.telefono}</span>
                   </div>
                 )}
                 {usuario.cedula && (
-                  <div className="flex items-center text-sm text-gray-600">
-                    <FaIdCard className="mr-2 text-gray-400" />
-                    <span>{usuario.cedula}</span>
+                  <div className="flex items-start text-sm text-gray-600 min-w-0">
+                    <FaIdCard className="mr-2 text-gray-400 flex-shrink-0 mt-0.5" />
+                    <span className="break-words min-w-0">{usuario.cedula}</span>
                   </div>
                 )}
                 {usuario.condominios && (
-                  <div className="flex items-center text-sm text-gray-600">
-                    <FaBuilding className="mr-2 text-gray-400" />
-                    <span>{usuario.condominios.nombre}</span>
+                  <div className="flex items-start text-sm text-gray-600 min-w-0">
+                    <FaBuilding className="mr-2 text-gray-400 flex-shrink-0 mt-0.5" />
+                    <span className="break-words min-w-0">{usuario.condominios.nombre}</span>
                   </div>
                 )}
               </div>
 
-              <div className="flex space-x-2 mt-4">
+              <div className="flex space-x-2 mt-4 flex-shrink-0">
                 <button
                   onClick={() => handleAprobar(usuario.id, 'residente')}
                   disabled={procesandoId === usuario.id}
-                  className="flex-1 bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center space-x-2"
+                  className="flex-1 bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center space-x-2 text-sm font-medium shadow-sm"
                 >
                   <FaCheck />
                   <span>Aprobar</span>
@@ -231,7 +232,7 @@ const AdminAprobacionesPage = () => {
                 <button
                   onClick={() => setUsuarioRechazoId(usuario.id)}
                   disabled={procesandoId === usuario.id}
-                  className="flex-1 bg-red-500 text-white px-4 py-2 rounded hover:bg-red-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center space-x-2"
+                  className="flex-1 bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center space-x-2 text-sm font-medium shadow-sm"
                 >
                   <FaTimes />
                   <span>Rechazar</span>
@@ -244,32 +245,41 @@ const AdminAprobacionesPage = () => {
 
       {/* Modal de rechazo */}
       {usuarioRechazoId && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4">
-            <h2 className="text-xl font-bold mb-4">Rechazar Usuario</h2>
-            <p className="text-gray-600 mb-4">
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4 shadow-xl">
+            <h2 className="text-xl font-bold mb-4 text-gray-800">Rechazar Usuario</h2>
+            <p className="text-gray-600 mb-4 text-sm">
               ¿Estás seguro de que deseas rechazar esta solicitud de registro?
             </p>
-            <textarea
-              value={motivoRechazo}
-              onChange={(e) => setMotivoRechazo(e.target.value)}
-              placeholder="Motivo del rechazo (opcional)"
-              className="w-full border rounded p-2 mb-4 min-h-[100px]"
-            />
-            <div className="flex space-x-2">
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Motivo del rechazo <span className="text-gray-500 text-xs font-normal">(recomendado - se mostrará al usuario)</span>
+              </label>
+              <textarea
+                value={motivoRechazo}
+                onChange={(e) => setMotivoRechazo(e.target.value)}
+                placeholder="Ingresa el motivo del rechazo. Este mensaje se enviará al usuario en su notificación..."
+                className="w-full border border-gray-300 rounded-lg px-4 py-2 min-h-[100px] resize-y focus:ring-2 focus:ring-red-500 focus:border-red-500 text-sm text-gray-800"
+                maxLength={500}
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                {motivoRechazo.length}/500 caracteres
+              </p>
+            </div>
+            <div className="flex space-x-3 pt-2">
               <button
                 onClick={() => {
                   setUsuarioRechazoId(null);
                   setMotivoRechazo('');
                 }}
-                className="flex-1 bg-gray-300 text-gray-800 px-4 py-2 rounded hover:bg-gray-400 transition-colors"
+                className="flex-1 bg-gray-300 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-400 transition-colors font-medium text-sm"
               >
                 Cancelar
               </button>
               <button
                 onClick={handleRechazar}
                 disabled={procesandoId !== null}
-                className="flex-1 bg-red-500 text-white px-4 py-2 rounded hover:bg-red-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                className="flex-1 bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed font-medium text-sm shadow-sm"
               >
                 {procesandoId ? 'Procesando...' : 'Rechazar'}
               </button>

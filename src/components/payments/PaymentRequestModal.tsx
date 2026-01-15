@@ -1,20 +1,14 @@
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { solicitarPago, obtenerViviendaUsuario, subirArchivoComprobante } from '../../services/bookService';
+import { solicitarPago, subirArchivoComprobante, verificarNumeroCasaUsuario } from '../../services/bookService';
 import { useAuth } from '../../hooks/useAuth';
+import { supabase } from '../../supabase/client';
 
 interface PaymentRequestModalProps {
   isOpen: boolean;
   onClose: () => void;
   onSuccess?: () => void;
 }
-
-const tiposPago = [
-  { value: 'mantenimiento', label: 'Mantenimiento' },
-  { value: 'multa', label: 'Multa' },
-  { value: 'reserva', label: 'Reserva' },
-  { value: 'otros', label: 'Otros' },
-];
 
 export const PaymentRequestModal: React.FC<PaymentRequestModalProps> = ({
   isOpen,
@@ -25,27 +19,27 @@ export const PaymentRequestModal: React.FC<PaymentRequestModalProps> = ({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [formData, setFormData] = useState({
-    concepto: '',
-    monto: '',
-    tipo: 'mantenimiento' as string,
-    fecha_vencimiento: '',
     referencia: '',
     descripcion: '',
+    nombre: '',
+    numeroCasa: '',
+    monto: '',
     comprobante: null as File | null,
   });
+  const [viviendaInfo, setViviendaInfo] = useState<{id: number, numero: string} | null>(null);
 
   // Limpiar formulario al cerrar
   useEffect(() => {
     if (!isOpen) {
       setFormData({
-        concepto: '',
-        monto: '',
-        tipo: 'mantenimiento',
-        fecha_vencimiento: '',
         referencia: '',
         descripcion: '',
+        nombre: '',
+        numeroCasa: '',
+        monto: '',
         comprobante: null,
       });
+      setViviendaInfo(null);
       setError(null);
     }
   }, [isOpen]);
@@ -60,44 +54,73 @@ export const PaymentRequestModal: React.FC<PaymentRequestModalProps> = ({
     }
 
     // Validaciones
-    if (!formData.concepto.trim()) {
-      setError('El concepto es requerido');
+    if (!formData.nombre.trim()) {
+      setError('El nombre es requerido');
       return;
     }
 
-    if (!formData.monto || parseFloat(formData.monto) <= 0) {
-      setError('El monto debe ser mayor a 0');
+    if (!formData.numeroCasa.trim()) {
+      setError('El número de casa es requerido para realizar el pago');
+      return;
+    }
+
+    if (!formData.comprobante) {
+      setError('El comprobante de pago es obligatorio');
+      return;
+    }
+
+    if (!formData.descripcion.trim()) {
+      setError('La descripción es obligatoria');
       return;
     }
 
     try {
       setLoading(true);
 
-      // 1. Obtener vivienda_id del usuario
-      const vivienda_id = await obtenerViviendaUsuario(user.id);
+      // 1. Verificar que el número de casa proporcionado pertenece al usuario
+      const vivienda_id = await verificarNumeroCasaUsuario(user.id, formData.numeroCasa.trim());
       
       if (!vivienda_id) {
-        throw new Error('No se encontró una vivienda asociada a tu cuenta. Por favor, contacta a la administración.');
+        throw new Error('El número de casa proporcionado no está asociado a tu cuenta. Verifica el número e intenta nuevamente.');
       }
 
-      // 2. Subir comprobante si existe
+      // 2. Subir comprobante (obligatorio)
       let archivo_comprobante_id: number | null = null;
       if (formData.comprobante) {
-        archivo_comprobante_id = await subirArchivoComprobante(formData.comprobante, user.id);
-        if (!archivo_comprobante_id) {
-          console.warn('No se pudo subir el comprobante, continuando sin él');
+        try {
+          archivo_comprobante_id = await subirArchivoComprobante(formData.comprobante, user.id);
+          if (!archivo_comprobante_id) {
+            throw new Error('No se pudo subir el comprobante. Por favor, verifica el archivo e intenta nuevamente.');
+          }
+        } catch (uploadError: any) {
+          // Proporcionar mensaje de error más específico
+          const errorMessage = uploadError.message || 'Error desconocido al subir el archivo';
+          throw new Error(`Error al subir el comprobante: ${errorMessage}. Por favor, verifica que el archivo sea válido (JPG, PNG o PDF, máximo 10MB) e intenta nuevamente.`);
         }
+      } else {
+        throw new Error('El comprobante de pago es obligatorio');
       }
 
       // 3. Crear la solicitud de pago
+      // Parsear el monto si se proporcionó, de lo contrario usar 0
+      const montoPago = formData.monto.trim() ? parseFloat(formData.monto.trim()) : 0;
+      
+      // Validar que el monto sea un número válido y positivo si se proporcionó
+      if (formData.monto.trim() && (isNaN(montoPago) || montoPago < 0)) {
+        setError('El monto debe ser un número válido y mayor o igual a 0');
+        setLoading(false);
+        return;
+      }
+
       await solicitarPago({
         usuario_id: user.id,
         vivienda_id: vivienda_id,
-        concepto: formData.concepto,
-        monto: parseFloat(formData.monto),
-        tipo: formData.tipo,
-        fecha_vencimiento: formData.fecha_vencimiento || undefined,
+        concepto: `Pago - ${formData.nombre} - ${new Date().toLocaleDateString()}`,
+        monto: montoPago,
+        tipo: 'mantenimiento',
         archivo_comprobante_id: archivo_comprobante_id || undefined,
+        observaciones: formData.descripcion,
+        referencia: formData.referencia || undefined,
       });
 
       // 4. Éxito - cerrar modal y notificar
@@ -138,103 +161,80 @@ export const PaymentRequestModal: React.FC<PaymentRequestModalProps> = ({
           )}
 
           <form onSubmit={handleSubmit} className="space-y-4">
-            {/* Concepto */}
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Concepto <span className="text-red-500">*</span>
-              </label>
-              <input
-                type="text"
-                value={formData.concepto}
-                onChange={(e) => setFormData({ ...formData, concepto: e.target.value })}
-                className="w-full border border-gray-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                placeholder="Ej: Cuota de Mantenimiento - Enero 2025"
-                required
-              />
-            </div>
-
-            {/* Monto y Tipo */}
+            {/* Nombre y Número de Casa - Juntos */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Monto <span className="text-red-500">*</span>
+                  Nombre <span className="text-red-500">*</span>
                 </label>
                 <input
-                  type="number"
-                  step="0.01"
-                  min="0.01"
-                  value={formData.monto}
-                  onChange={(e) => setFormData({ ...formData, monto: e.target.value })}
-                  className="w-full border border-gray-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                  placeholder="0.00"
+                  type="text"
+                  value={formData.nombre}
+                  onChange={(e) => setFormData({ ...formData, nombre: e.target.value })}
+                  className="w-full border border-gray-300 rounded-lg px-4 py-2 bg-white text-gray-800 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  placeholder="Tu nombre completo"
                   required
                 />
               </div>
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Tipo <span className="text-red-500">*</span>
+                  Número de Casa <span className="text-red-500">*</span>
                 </label>
-                <select
-                  value={formData.tipo}
-                  onChange={(e) => setFormData({ ...formData, tipo: e.target.value })}
-                  className="w-full border border-gray-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                <input
+                  type="text"
+                  value={formData.numeroCasa}
+                  onChange={async (e) => {
+                    const numero = e.target.value;
+                    setFormData({ ...formData, numeroCasa: numero });
+                    
+                    // Verificar en tiempo real si el número de casa es válido
+                    if (numero.trim() && user) {
+                      try {
+                        const vivienda_id = await verificarNumeroCasaUsuario(user.id, numero.trim());
+                        if (vivienda_id) {
+                          // Obtener información de la vivienda
+                          const { data: vivienda } = await supabase
+                            .from('viviendas')
+                            .select('id, numero_apartamento')
+                            .eq('id', vivienda_id)
+                            .single();
+                          
+                          if (vivienda) {
+                            setViviendaInfo({ id: vivienda.id, numero: vivienda.numero_apartamento });
+                            setError(null);
+                          }
+                        } else {
+                          setViviendaInfo(null);
+                        }
+                      } catch (err) {
+                        setViviendaInfo(null);
+                      }
+                    } else {
+                      setViviendaInfo(null);
+                    }
+                  }}
+                  className="w-full border border-gray-300 rounded-lg px-4 py-2 bg-white text-gray-800 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  placeholder="Ej: A-101, Casa 5, etc."
                   required
-                >
-                  {tiposPago.map((tipo) => (
-                    <option key={tipo.value} value={tipo.value}>
-                      {tipo.label}
-                    </option>
-                  ))}
-                </select>
+                />
+                {viviendaInfo && (
+                  <p className="text-sm text-green-600 mt-1">
+                    ✓ Casa verificada: {viviendaInfo.numero}
+                  </p>
+                )}
               </div>
             </div>
+            {!viviendaInfo && formData.numeroCasa.trim() && (
+              <p className="text-xs text-gray-500 -mt-3">
+                Ingresa el número de casa que registraste. Se verificará que pertenece a tu cuenta.
+              </p>
+            )}
 
-            {/* Fecha de vencimiento */}
+            {/* Comprobante - Obligatorio */}
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
-                Fecha de Vencimiento (Opcional)
-              </label>
-              <input
-                type="date"
-                value={formData.fecha_vencimiento}
-                onChange={(e) => setFormData({ ...formData, fecha_vencimiento: e.target.value })}
-                className="w-full border border-gray-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-              />
-            </div>
-
-            {/* Referencia */}
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Referencia (Opcional)
-              </label>
-              <input
-                type="text"
-                value={formData.referencia}
-                onChange={(e) => setFormData({ ...formData, referencia: e.target.value })}
-                className="w-full border border-gray-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                placeholder="Ej: REF-2025-001234"
-              />
-            </div>
-
-            {/* Descripción */}
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Descripción / Observaciones (Opcional)
-              </label>
-              <textarea
-                value={formData.descripcion}
-                onChange={(e) => setFormData({ ...formData, descripcion: e.target.value })}
-                rows={3}
-                className="w-full border border-gray-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                placeholder="Agrega cualquier información adicional sobre este pago..."
-              />
-            </div>
-
-            {/* Comprobante */}
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Comprobante (Opcional)
+                Comprobante de Pago <span className="text-red-500">*</span>
               </label>
               <input
                 type="file"
@@ -248,15 +248,74 @@ export const PaymentRequestModal: React.FC<PaymentRequestModalProps> = ({
                       return;
                     }
                     setFormData({ ...formData, comprobante: file });
+                    setError(null);
                   }
                 }}
-                className="w-full border border-gray-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                className="w-full border border-gray-300 rounded-lg px-4 py-2 bg-white text-gray-800 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
+                required
               />
               {formData.comprobante && (
-                <p className="text-sm text-gray-600 mt-1">
-                  Archivo seleccionado: {formData.comprobante.name} ({(formData.comprobante.size / 1024).toFixed(2)} KB)
+                <p className="text-sm text-green-600 mt-1">
+                  ✓ Archivo seleccionado: {formData.comprobante.name} ({(formData.comprobante.size / 1024).toFixed(2)} KB)
                 </p>
               )}
+              <p className="text-xs text-gray-500 mt-1">
+                Sube el comprobante de pago (PDF, JPG, PNG). Máximo 10MB.
+              </p>
+            </div>
+
+            {/* Descripción - Obligatoria */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Descripción <span className="text-red-500">*</span>
+              </label>
+              <textarea
+                value={formData.descripcion}
+                onChange={(e) => setFormData({ ...formData, descripcion: e.target.value })}
+                rows={4}
+                className="w-full border border-gray-300 rounded-lg px-4 py-2 bg-white text-gray-800 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 resize-y"
+                placeholder="Describe los detalles del pago realizado..."
+                required
+              />
+            </div>
+
+            {/* Monto - Opcional */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Monto del Pago (Opcional)
+              </label>
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                value={formData.monto}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  // Permitir solo números y punto decimal
+                  if (value === '' || /^\d*\.?\d*$/.test(value)) {
+                    setFormData({ ...formData, monto: value });
+                  }
+                }}
+                className="w-full border border-gray-300 rounded-lg px-4 py-2 bg-white text-gray-800 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                placeholder="Ej: 100.00 (dejar vacío si no conoces el monto)"
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                Si conoces el monto del pago, ingrésalo aquí. Si no, déjalo vacío y el administrador lo ajustará.
+              </p>
+            </div>
+
+            {/* Referencia */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Referencia (Opcional)
+              </label>
+              <input
+                type="text"
+                value={formData.referencia}
+                onChange={(e) => setFormData({ ...formData, referencia: e.target.value })}
+                className="w-full border border-gray-300 rounded-lg px-4 py-2 bg-white text-gray-800 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                placeholder="Ej: REF-2025-001234"
+              />
             </div>
 
             {/* Botones */}

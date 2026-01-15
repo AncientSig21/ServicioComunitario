@@ -7,10 +7,28 @@ import MorosoBlock from '../components/shared/MorosoBlock';
 import { ScrollToTop } from '../components/shared/ScrollToTop';
 import { ReservationProvider } from '../contexts/ReservationContext';
 import { ToastProvider } from '../contexts/ToastContext';
+import { RegistrationStatusModal } from '../components/shared/RegistrationStatusModal';
+import { useState, useEffect } from 'react';
 
 export const RootLayout = () => {
 	const { pathname } = useLocation();
 	const { user, isUserMoroso, loading } = useAuth();
+	const [showStatusModal, setShowStatusModal] = useState(false);
+	const [hasCheckedStatus, setHasCheckedStatus] = useState(false);
+
+	// Verificar estado de registro cuando el usuario inicia sesión
+	useEffect(() => {
+		if (user && user.id && !hasCheckedStatus) {
+			// Verificar si el usuario tiene rol null (pendiente) o Estado 'Rechazado'
+			// Si es así, mostrar el modal después de un breve delay
+			const timer = setTimeout(() => {
+				setShowStatusModal(true);
+				setHasCheckedStatus(true);
+			}, 1000);
+
+			return () => clearTimeout(timer);
+		}
+	}, [user, hasCheckedStatus]);
 
 	// Si el usuario está cargando, mostrar loading
 	if (loading) {
@@ -45,6 +63,14 @@ export const RootLayout = () => {
 					</main>
 					<Footer />
 					<ScrollToTop />
+					
+					{/* Modal de estado de registro (aprobación/rechazo) */}
+					{user && user.id && showStatusModal && (
+						<RegistrationStatusModal
+							userId={user.id}
+							onClose={() => setShowStatusModal(false)}
+						/>
+					)}
 				</div>
 			</ReservationProvider>
 		</ToastProvider>

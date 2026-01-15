@@ -159,7 +159,7 @@ const AdminCondominiosPage = () => {
         </h1>
         <button
           onClick={() => setShowModal(true)}
-          className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium"
+          className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium shadow-sm"
         >
           + Nuevo Condominio
         </button>
@@ -180,11 +180,11 @@ const AdminCondominiosPage = () => {
               placeholder="Buscar por nombre o dirección..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full border p-2 rounded"
+              className="w-full border border-gray-300 rounded-lg px-4 py-2 bg-white text-gray-800 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
             />
           </div>
-          <div className="text-sm text-gray-600 flex items-center">
-            Total: <span className="font-bold ml-2">{filteredCondominios.length}</span> condominios
+          <div className="text-sm text-gray-700 flex items-center">
+            Total: <span className="font-bold ml-2 text-gray-800">{filteredCondominios.length}</span> condominios
           </div>
         </div>
       </div>
@@ -210,7 +210,7 @@ const AdminCondominiosPage = () => {
               ) : (
                 currentCondominios.map((condominio) => (
                   <tr key={condominio.id} className="hover:bg-gray-50">
-                    <td className="px-4 py-3 text-sm font-medium">{condominio.nombre}</td>
+                    <td className="px-4 py-3 text-sm font-medium text-gray-800">{condominio.nombre}</td>
                     <td className="px-4 py-3 text-sm text-center">
                       <span className="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-blue-100 text-blue-800">
                         {condominio.numero_viviendas || 0}
@@ -287,7 +287,7 @@ const AdminCondominiosPage = () => {
                     type="text"
                     value={formData.nombre}
                     onChange={(e) => setFormData({ ...formData, nombre: e.target.value })}
-                    className="w-full border p-2 rounded"
+                    className="w-full border border-gray-300 rounded-lg px-4 py-2 bg-white text-gray-800 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                     placeholder="Ej: San Martín, Los Rosales, etc."
                     required
                   />
@@ -306,7 +306,7 @@ const AdminCondominiosPage = () => {
                 <button
                   type="button"
                   onClick={handleCancel}
-                  className="flex-1 px-4 py-2 bg-gray-300 text-gray-700 rounded hover:bg-gray-400"
+                  className="flex-1 px-4 py-2 bg-gray-300 text-gray-700 rounded-lg hover:bg-gray-400 transition-colors"
                 >
                   Cancelar
                 </button>

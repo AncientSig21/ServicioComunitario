@@ -104,7 +104,7 @@ export interface User {
   escuela: string | null;
   numeroApartamento?: string;
   rol?: string;
-  estado?: string | null; // Activo, Moroso, etc.
+  Estado?: string | null; // Activo, Moroso, etc.
 }
 
 const createSupabaseClient = () => {
@@ -226,7 +226,7 @@ export const authService = {
         numeroApartamento: userData.numeroApartamento || '',
         tipoResidencia: userData.tipoResidencia || '',
         rol: 'Usuario',
-        estado: 'Activo', // Estado inicial: Activo (sin deudas, sin pagos pendientes)
+        Estado: 'Activo', // Estado inicial: Activo (sin deudas, sin pagos pendientes)
         // Campos adicionales según tipo de residencia
         ...(userData.tipoResidencia === 'Propietario' && {
           fechaAdquisicion: userData.fechaAdquisicion || '',
@@ -256,7 +256,7 @@ export const authService = {
         escuela: nuevoUsuario.escuela,
         numeroApartamento: nuevoUsuario.numeroApartamento,
         rol: nuevoUsuario.rol,
-        estado: nuevoUsuario.estado
+        Estado: nuevoUsuario.Estado
       };
       
       console.log('✅ Usuario registrado y guardado en localStorage:', userResponse);
@@ -291,7 +291,7 @@ export const authService = {
           numeroApartamento: userData.numeroApartamento || '',
           tipoResidencia: userData.tipoResidencia || '',
           rol: 'Usuario',
-          estado: 'Activo',
+          Estado: 'Activo',
           ...(userData.tipoResidencia === 'Propietario' && {
             fechaAdquisicion: userData.fechaAdquisicion || '',
             numeroEscritura: userData.numeroEscritura || '',
@@ -319,7 +319,7 @@ export const authService = {
           correo: nuevoUsuario.correo,
           escuela: nuevoUsuario.escuela,
           rol: nuevoUsuario.rol,
-          estado: nuevoUsuario.estado
+          Estado: nuevoUsuario.Estado
         };
         
         return { data: userResponse, error: null };
@@ -370,7 +370,7 @@ export const authService = {
           numeroApartamento: userData.numeroApartamento || '',
           tipoResidencia: userData.tipoResidencia || '',
           rol: 'Usuario',
-          estado: 'Activo', // Estado inicial: Activo (sin deudas, sin pagos pendientes)
+          Estado: 'Activo', // Estado inicial: Activo (sin deudas, sin pagos pendientes)
           ...(userData.tipoResidencia === 'Propietario' && {
             fechaAdquisicion: userData.fechaAdquisicion || '',
             numeroEscritura: userData.numeroEscritura || '',
@@ -398,7 +398,7 @@ export const authService = {
           correo: nuevoUsuario.correo,
           escuela: nuevoUsuario.escuela,
           rol: nuevoUsuario.rol,
-          estado: nuevoUsuario.estado
+          Estado: nuevoUsuario.Estado
         };
         
         return { data: userResponse, error: null };
@@ -411,7 +411,7 @@ export const authService = {
         correo: data.correo,
         escuela: null,
         rol: data.rol || 'Usuario',
-        estado: 'Activo' // Valor por defecto ya que la columna estado no existe en la BD
+        Estado: 'Activo' // Valor por defecto ya que la columna Estado existe en la BD
       };
       
       return { data: userResponse, error: null };
@@ -442,7 +442,7 @@ export const authService = {
         numeroApartamento: userData.numeroApartamento || '',
         tipoResidencia: userData.tipoResidencia || '',
         rol: 'Usuario',
-        estado: 'Activo', // Estado inicial: Activo (sin deudas, sin pagos pendientes)
+        Estado: 'Activo', // Estado inicial: Activo (sin deudas, sin pagos pendientes)
         ...(userData.tipoResidencia === 'Propietario' && {
           fechaAdquisicion: userData.fechaAdquisicion || '',
           numeroEscritura: userData.numeroEscritura || '',
@@ -471,7 +471,7 @@ export const authService = {
         escuela: nuevoUsuario.escuela,
         numeroApartamento: nuevoUsuario.numeroApartamento,
         rol: nuevoUsuario.rol,
-        estado: nuevoUsuario.estado
+        Estado: nuevoUsuario.Estado
       };
       
       return { data: userResponse, error: null };
@@ -506,11 +506,8 @@ export const authService = {
         return { data: null, error: { message: 'Contraseña incorrecta' } };
       }
       
-      // Verificar si el usuario está pendiente de aprobación (rol null)
-      if (!usuario.rol || usuario.rol === null) {
-        console.warn('⏳ Usuario pendiente de aprobación:', loginData.correo);
-        return { data: null, error: { message: 'Tu cuenta está pendiente de aprobación por un administrador. Te notificaremos cuando sea aprobada.' } };
-      }
+      // Permitir login incluso si el usuario está pendiente de aprobación (rol null)
+      // El usuario podrá acceder pero verá notificaciones cuando sea aprobado/rechazado
       
       const userData: User = {
         id: usuario.id,
@@ -519,7 +516,7 @@ export const authService = {
         escuela: usuario.escuela || null,
         numeroApartamento: usuario.numeroApartamento || undefined,
         rol: usuario.rol || 'Usuario',
-        estado: usuario.estado || 'Activo'
+        Estado: usuario.Estado || 'Activo'
       };
       
       console.log('✅ Usuario autenticado desde localStorage:', userData);
@@ -553,10 +550,8 @@ export const authService = {
         return { data: null, error: { message: 'Credenciales incorrectas' } };
       }
 
-      // Verificar si el usuario está pendiente de aprobación (rol null)
-      if (!usuario.rol || usuario.rol === null) {
-        return { data: null, error: { message: 'Tu cuenta está pendiente de aprobación por un administrador. Te notificaremos cuando sea aprobada.' } };
-      }
+      // Permitir login incluso si el usuario está pendiente de aprobación (rol null)
+      // El usuario podrá acceder pero verá notificaciones cuando sea aprobado/rechazado
 
       // Construir objeto User correctamente (solo campos que existen en la BD)
       // Nota: La columna 'estado' NO existe en la BD real según los tipos de Supabase
@@ -566,7 +561,7 @@ export const authService = {
         correo: usuario.correo,
         escuela: null, // La columna escuela no existe en la base de datos
         rol: usuario.rol || 'Usuario',
-        estado: 'Activo' // Valor por defecto ya que la columna estado no existe en la BD
+        Estado: 'Activo' // Valor por defecto ya que la columna Estado existe en la BD
       };
 
       return { data: userResponse, error: null };

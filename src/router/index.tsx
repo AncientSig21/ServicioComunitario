@@ -13,6 +13,8 @@ import AdminReportsPage from '../pages/AdminReportsPage';
 import AdminAprobacionesPage from '../pages/AdminAprobacionesPage';
 import AdminCondominiosPage from '../pages/AdminCondominiosPage';
 import AdminMantenimientoPage from '../pages/AdminMantenimientoPage';
+import AdminPagosPage from '../pages/AdminPagosPage';
+import AdminValidarPagosPage from '../pages/AdminValidarPagosPage';
 import { ProtectedRoute } from '../components/shared/ProtectedRoute';
 import { AdminProtectedRoute } from '../components/shared/AdminProtectedRoute';
 
@@ -35,6 +37,14 @@ export const router = createBrowserRouter([
       },
       {
         path: 'anuncios',
+        element: (
+          <ProtectedRoute>
+            <AnunciosPage />
+          </ProtectedRoute>
+        ),
+      },
+      {
+        path: 'foro',
         element: (
           <ProtectedRoute>
             <AnunciosPage />
@@ -116,6 +126,14 @@ export const router = createBrowserRouter([
           {
             path: 'mantenimiento',
             element: <AdminMantenimientoPage />,
+          },
+          {
+            path: 'pagos',
+            element: <AdminPagosPage />,
+          },
+          {
+            path: 'validar-pagos',
+            element: <AdminValidarPagosPage />,
           },
         ],
       },

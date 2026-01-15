@@ -1,12 +1,48 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Brands } from '../components/home/Brands';
 import { FeatureGrid } from '../components/home/FeatureGrid';
 import { PaymentRequestModal } from '../components/payments/PaymentRequestModal';
 import { useAuth } from '../hooks/useAuth';
+import { fetchPagos } from '../services/bookService';
 
 export const HomePage = () => {
-	const { isAuthenticated } = useAuth();
+	const { isAuthenticated, user } = useAuth();
 	const [showPaymentModal, setShowPaymentModal] = useState(false);
+	const [tienePagoPendiente, setTienePagoPendiente] = useState(false);
+	const [pagoPendiente, setPagoPendiente] = useState<any>(null);
+
+	// Verificar si hay un pago pendiente con comprobante
+	useEffect(() => {
+		const verificarPagoPendiente = async () => {
+			if (!user || !isAuthenticated) {
+				setTienePagoPendiente(false);
+				return;
+			}
+
+			try {
+				const pagosBD = await fetchPagos({ usuario_id: user.id });
+				const pagoConComprobante = pagosBD.find(
+					(p: any) => p.estado === 'pendiente' && p.comprobante_archivo_id !== null
+				);
+				
+				if (pagoConComprobante) {
+					setTienePagoPendiente(true);
+					setPagoPendiente(pagoConComprobante);
+				} else {
+					setTienePagoPendiente(false);
+					setPagoPendiente(null);
+				}
+			} catch (error) {
+				console.error('Error verificando pago pendiente:', error);
+				setTienePagoPendiente(false);
+			}
+		};
+
+		verificarPagoPendiente();
+		// Verificar cada 30 segundos
+		const interval = setInterval(verificarPagoPendiente, 30000);
+		return () => clearInterval(interval);
+	}, [user, isAuthenticated]);
 
 	return (
 		<div>
@@ -14,23 +50,61 @@ export const HomePage = () => {
 
 			<Brands />
 
-			{/* Sección de solicitar pago - Solo para usuarios autenticados */}
+			{/* Sección de pagos - Solo para usuarios autenticados */}
 			{isAuthenticated && (
-				<section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 my-16 sm:my-24 lg:my-32">
-					<div className="max-w-2xl mx-auto bg-gradient-to-r from-blue-50 to-blue-100 rounded-xl shadow-md border border-blue-200 p-6 sm:p-8">
-						<div className="text-center">
-							<h3 className="text-xl sm:text-2xl font-bold text-gray-900 mb-3">
-								💰 Solicitar Nuevo Pago
-							</h3>
-							<p className="text-gray-700 mb-4">
-								¿Necesitas registrar un nuevo pago? Haz clic en el botón para solicitar un pago y que el administrador lo revise.
-							</p>
-							<button
-								onClick={() => setShowPaymentModal(true)}
-								className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium shadow-md"
-							>
-								Solicitar Pago
-							</button>
+				<section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 my-8 sm:my-12">
+					<div className="max-w-3xl mx-auto space-y-4">
+						{/* Pago Pendiente - Si existe */}
+						{tienePagoPendiente && pagoPendiente && (
+							<div className="bg-gradient-to-r from-yellow-50 to-yellow-100 rounded-lg shadow-sm border border-yellow-200 p-4 sm:p-5">
+								<div className="text-center">
+									<h3 className="text-lg sm:text-xl font-bold text-gray-900 mb-2">
+										⏳ Pago Pendiente de Revisión
+									</h3>
+									<p className="text-sm text-gray-700 mb-3">
+										Tienes un pago pendiente de revisión por el administrador. Recibirás una notificación cuando sea procesado.
+									</p>
+									<div className="bg-white rounded-lg p-3 mb-3 text-left max-w-sm mx-auto">
+										<p className="text-xs text-gray-600 mb-1">Concepto:</p>
+										<p className="font-semibold text-sm text-gray-900 mb-2 break-words">{pagoPendiente.concepto}</p>
+										<p className="text-xs text-gray-600 mb-1">Monto:</p>
+										<p className="text-lg font-bold text-blue-600">
+											{new Intl.NumberFormat('es-VE', {
+												style: 'currency',
+												currency: 'VES',
+												minimumFractionDigits: 2,
+											}).format(parseFloat(pagoPendiente.monto))}
+										</p>
+									</div>
+									<a
+										href="/pagos"
+										className="inline-block px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium shadow-sm"
+									>
+										Ver Detalles del Pago
+									</a>
+								</div>
+							</div>
+						)}
+
+						{/* Solicitar Nuevo Pago - Siempre visible */}
+						<div className="bg-gradient-to-r from-blue-50 to-blue-100 rounded-lg shadow-sm border border-blue-200 p-4 sm:p-5">
+							<div className="text-center">
+								<h3 className="text-lg sm:text-xl font-bold text-gray-900 mb-2">
+									💰 Solicitar Nuevo Pago
+								</h3>
+								<p className="text-sm text-gray-700 mb-3">
+									{tienePagoPendiente 
+										? '¿Necesitas registrar otro pago? Puedes solicitar un nuevo pago incluso si tienes uno pendiente de revisión.'
+										: '¿Necesitas registrar un nuevo pago? Haz clic en el botón para solicitar un pago y que el administrador lo revise.'
+									}
+								</p>
+								<button
+									onClick={() => setShowPaymentModal(true)}
+									className="px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium shadow-sm"
+								>
+									Solicitar Pago
+								</button>
+							</div>
 						</div>
 					</div>
 				</section>
@@ -58,12 +132,29 @@ export const HomePage = () => {
 				</div>
 			</section>
 
-			{/* Modal de solicitud de pago */}
+			{/* Modal de solicitud de pago - Siempre disponible */}
 			<PaymentRequestModal
 				isOpen={showPaymentModal}
 				onClose={() => setShowPaymentModal(false)}
 				onSuccess={() => {
-					// Puedes agregar lógica adicional aquí si es necesario
+					// Recargar verificación de pago pendiente
+					const verificarPagoPendiente = async () => {
+						if (!user) return;
+						try {
+							const pagosBD = await fetchPagos({ usuario_id: user.id });
+							const pagoConComprobante = pagosBD.find(
+								(p: any) => p.estado === 'pendiente' && p.comprobante_archivo_id !== null
+							);
+							
+							if (pagoConComprobante) {
+								setTienePagoPendiente(true);
+								setPagoPendiente(pagoConComprobante);
+							}
+						} catch (error) {
+							console.error('Error verificando pago pendiente:', error);
+						}
+					};
+					verificarPagoPendiente();
 				}}
 			/>
 		</div>

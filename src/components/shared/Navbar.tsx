@@ -5,13 +5,15 @@ import {
 	HiOutlineBookOpen,
 } from 'react-icons/hi';
 import { FaBarsStaggered } from 'react-icons/fa6';
-import { FaTachometerAlt } from 'react-icons/fa';
+import { FaTachometerAlt, FaBell } from 'react-icons/fa';
 import { Logo } from './Logo';
 import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../../hooks/useAuth';
 import { useCallback } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useReservationContext } from '../../contexts/ReservationContext';
+import { fetchNotificacionesUsuario } from '../../services/bookService';
+import { supabase } from '../../supabase/client';
 import { formatDate } from '../../utils/dateUtils';
 
 export const Navbar = () => {
@@ -28,6 +30,10 @@ export const Navbar = () => {
 	const [showSearch, setShowSearch] = useState(false);
 	const [searchValue, setSearchValue] = useState('');
 	const searchInputRef = useRef<HTMLInputElement>(null);
+	const [notificaciones, setNotificaciones] = useState<any[]>([]);
+	const [notificacionesNoLeidas, setNotificacionesNoLeidas] = useState(0);
+	const [showNotificaciones, setShowNotificaciones] = useState(false);
+	const notificacionesMenuRef = useRef<HTMLDivElement>(null);
 
 	// Cargar historial de solicitudes desde la base de datos
 	useEffect(() => {
@@ -45,6 +51,27 @@ export const Navbar = () => {
 			fetchPrestamos();
 		}
 	}, [user?.id, refreshReservations()]);
+
+	// Cargar notificaciones del usuario
+	useEffect(() => {
+		if (user?.id) {
+			const cargarNotificaciones = async () => {
+				try {
+					// Obtener todas las notificaciones (no solo las no leídas) para mostrar en el menú
+					const todasLasNotificaciones = await fetchNotificacionesUsuario(user.id);
+					const noLeidas = todasLasNotificaciones.filter((n: any) => !n.leida);
+					setNotificaciones(todasLasNotificaciones.slice(0, 10)); // Mostrar las 10 más recientes
+					setNotificacionesNoLeidas(noLeidas.length);
+				} catch (error) {
+					console.error('Error cargando notificaciones:', error);
+				}
+			};
+			cargarNotificaciones();
+			// Actualizar cada 30 segundos
+			const interval = setInterval(cargarNotificaciones, 30000);
+			return () => clearInterval(interval);
+		}
+	}, [user?.id]);
 
 	useEffect(() => {
 		if (!showMenu) return;
@@ -81,6 +108,17 @@ export const Navbar = () => {
 		return () => document.removeEventListener('mousedown', handleClickOutsideDownloads);
 	}, [showPrestamos]);
 
+	useEffect(() => {
+		if (!showNotificaciones) return;
+		function handleClickOutsideNotificaciones(event: MouseEvent) {
+			if (notificacionesMenuRef.current && !notificacionesMenuRef.current.contains(event.target as Node)) {
+				setShowNotificaciones(false);
+			}
+		}
+		document.addEventListener('mousedown', handleClickOutsideNotificaciones);
+		return () => document.removeEventListener('mousedown', handleClickOutsideNotificaciones);
+	}, [showNotificaciones]);
+
 	// Función para manejar la búsqueda
 	const handleSearch = useCallback(() => {
 		if (searchValue.trim() !== '') {
@@ -111,7 +149,20 @@ export const Navbar = () => {
 
 	const handleTogglePrestamos = () => {
 		setShowPrestamos(v => {
-			if (!v) setShowMenu(false);
+			if (!v) {
+				setShowMenu(false);
+				setShowNotificaciones(false);
+			}
+			return !v;
+		});
+	};
+
+	const handleToggleNotificaciones = () => {
+		setShowNotificaciones(v => {
+			if (!v) {
+				setShowMenu(false);
+				setShowPrestamos(false);
+			}
 			return !v;
 		});
 	};
@@ -276,8 +327,8 @@ export const Navbar = () => {
 										{user.rol && (
 											<p className='font-semibold text-gray-700 text-sm'>Rol: <span className='font-normal text-gray-900 capitalize'>{user.rol}</span></p>
 										)}
-										{user.estado && (
-											<p className='font-semibold text-gray-700 text-sm'>Estado: <span className={`font-normal ${user.estado === 'Moroso' ? 'text-red-600' : 'text-green-600'}`}>{user.estado}</span></p>
+										{user.Estado && (
+											<p className='font-semibold text-gray-700 text-sm'>Estado: <span className={`font-normal ${user.Estado === 'Moroso' ? 'text-red-600' : 'text-green-600'}`}>{user.Estado}</span></p>
 										)}
 									</div>
 									<button
@@ -295,6 +346,99 @@ export const Navbar = () => {
 									>
 										Cerrar sesión
 									</button>
+								</div>
+							)}
+						</div>
+
+						{/* Notificaciones */}
+						<div className='relative'>
+							<button 
+								className='relative text-white hover:text-secondary transition-colors'
+								onClick={handleToggleNotificaciones}
+								title="Notificaciones"
+							>
+								{notificacionesNoLeidas > 0 && (
+									<span className='absolute -top-1 -right-1 w-5 h-5 grid place-items-center bg-red-500 text-white text-xs rounded-full font-bold'>
+										{notificacionesNoLeidas > 9 ? '9+' : notificacionesNoLeidas}
+									</span>
+								)}
+								<FaBell size={25} />
+							</button>
+							{showNotificaciones && (
+								<div 
+									ref={notificacionesMenuRef} 
+									className='absolute right-0 mt-2 w-80 max-w-[90vw] bg-white border-2 border-secondary rounded-lg shadow-2xl z-50 max-h-[500px] overflow-hidden flex flex-col'
+								>
+									<div className="border-b border-gray-200 p-4 bg-gray-50">
+										<h3 className='font-bold text-base text-primary'>Notificaciones</h3>
+										{notificacionesNoLeidas > 0 && (
+											<p className='text-sm text-gray-600 mt-1'>{notificacionesNoLeidas} sin leer</p>
+										)}
+									</div>
+									<div className="overflow-y-auto flex-1">
+										{notificaciones.length === 0 ? (
+											<div className="p-6 text-center">
+												<p className='text-gray-500 text-sm'>No tienes notificaciones</p>
+											</div>
+										) : (
+											<ul className='divide-y divide-gray-200'>
+												{notificaciones.map((notif: any) => (
+													<li 
+														key={notif.id} 
+														className={`p-4 hover:bg-gray-50 transition-colors cursor-pointer ${!notif.leida ? 'bg-blue-50' : ''}`}
+														onClick={async () => {
+															// Marcar como leída
+															if (!notif.leida && user?.id) {
+																try {
+																	await supabase
+																		.from('notificaciones')
+																		.update({ leida: true, fecha_lectura: new Date().toISOString() })
+																		.eq('id', notif.id);
+																	
+																	// Si es una notificación de pago, ir a la página de pagos
+																	if (notif.relacion_entidad === 'pagos') {
+																		navigate('/pagos');
+																	}
+																	
+																	// Recargar notificaciones
+																	const todasLasNotificaciones = await fetchNotificacionesUsuario(user.id);
+																	const noLeidas = todasLasNotificaciones.filter((n: any) => !n.leida);
+																	setNotificaciones(todasLasNotificaciones.slice(0, 10));
+																	setNotificacionesNoLeidas(noLeidas.length);
+																} catch (error) {
+																	console.error('Error marcando notificación:', error);
+																}
+															} else if (notif.relacion_entidad === 'pagos') {
+																navigate('/pagos');
+															}
+															setShowNotificaciones(false);
+														}}
+													>
+														<div className='flex items-start gap-3'>
+															{!notif.leida && (
+																<span className="w-2 h-2 bg-blue-600 rounded-full mt-2 flex-shrink-0"></span>
+															)}
+															<div className="flex-1 min-w-0">
+																<p className={`text-sm font-medium ${!notif.leida ? 'text-gray-900' : 'text-gray-700'}`}>
+																	{notif.mensaje || 'Nueva notificación'}
+																</p>
+																{notif.created_at && (
+																	<p className='text-xs text-gray-500 mt-1'>
+																		{new Date(notif.created_at).toLocaleDateString('es-ES', {
+																			day: 'numeric',
+																			month: 'short',
+																			hour: '2-digit',
+																			minute: '2-digit'
+																		})}
+																	</p>
+																)}
+															</div>
+														</div>
+													</li>
+												))}
+											</ul>
+										)}
+									</div>
 								</div>
 							)}
 						</div>
@@ -361,7 +505,8 @@ export const Navbar = () => {
 					<div data-mobile-menu className="w-2/3 max-w-xs bg-white h-full shadow-lg p-6 flex flex-col gap-6 animate-slide-in">
 						<button onClick={() => setShowMobileMenu(false)} className="self-end text-2xl text-gray-500 mb-4">&times;</button>
 						<button onClick={() => handleNavLinkClick('/')} className={`${window.location.pathname === '/' ? 'text-secondary underline' : ''} text-lg font-semibold`}>Inicio</button>
-						<button onClick={() => handleNavLinkClick('/libros')} className={`${window.location.pathname === '/libros' ? 'text-secondary underline' : ''} text-lg font-semibold`}>Foro</button>
+						<button onClick={() => handleNavLinkClick('/anuncios')} className={`${window.location.pathname === '/anuncios' ? 'text-secondary underline' : ''} text-lg font-semibold`}>Anuncios</button>
+						<button onClick={() => handleNavLinkClick('/foro')} className={`${window.location.pathname === '/foro' ? 'text-secondary underline' : ''} text-lg font-semibold`}>Foro</button>
 						<button onClick={() => handleNavLinkClick('/tesis')} className={`${window.location.pathname === '/tesis' ? 'text-secondary underline' : ''} text-lg font-semibold`}>Servicios</button>
 					</div>
 				</div>

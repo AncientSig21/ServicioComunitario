@@ -294,17 +294,25 @@ export const fetchPagos = async (filters?: {
       `)
       .order('fecha_vencimiento', { ascending: true });
 
-    if (filters?.usuario_id) query = query.eq('usuario_id', filters.usuario_id);
+    if (filters?.usuario_id) {
+      query = query.eq('usuario_id', filters.usuario_id);
+      console.log('🔍 Filtrando pagos por usuario_id:', filters.usuario_id);
+    }
     if (filters?.vivienda_id) query = query.eq('vivienda_id', filters.vivienda_id);
     if (filters?.estado) query = query.eq('estado', filters.estado);
     if (filters?.tipo) query = query.eq('tipo', filters.tipo);
 
     const { data, error } = await query;
 
-    if (error) throw error;
+    if (error) {
+      console.error('❌ Error en fetchPagos:', error);
+      throw error;
+    }
+    
+    console.log(`✅ fetchPagos: ${data?.length || 0} pagos encontrados`, filters);
     return data || [];
   } catch (error) {
-    console.error('Error en fetchPagos:', error);
+    console.error('❌ Error en fetchPagos:', error);
     throw error;
   }
 };
@@ -406,11 +414,31 @@ export const solicitarPago = async ({
         fecha_evento: getCurrentLocalISOString()
       }]);
 
-    // 5. Notificar administradores
+    // 5. Notificar administradores con información del comprobante
+    // IMPORTANTE: La notificación se envía SIEMPRE, incluso si se usó base64 como respaldo
+    let mensajeNotificacion = '';
+    if (archivo_comprobante_id) {
+      // Obtener información del archivo para saber si es base64 o URL
+      const { data: archivoInfo } = await supabase
+        .from('archivos')
+        .select('url, nombre_original, tipo_mime')
+        .eq('id', archivo_comprobante_id)
+        .single();
+      
+      const esBase64 = archivoInfo?.url?.startsWith('data:');
+      if (esBase64) {
+        mensajeNotificacion = `Nueva solicitud de pago: ${concepto} - $${monto}. ✅ Comprobante adjunto (almacenado en base de datos, formato: ${archivoInfo?.tipo_mime || 'N/A'}).`;
+      } else {
+        mensajeNotificacion = `Nueva solicitud de pago: ${concepto} - $${monto}. ✅ Comprobante adjunto (ID: ${archivo_comprobante_id}, URL disponible).`;
+      }
+    } else {
+      mensajeNotificacion = `Nueva solicitud de pago: ${concepto} - $${monto}. ⚠️ Sin comprobante adjunto.`;
+    }
+    
     await notificarAdministradores(
       usuario_id,
       'nueva_solicitud_pago',
-      `Nueva solicitud de pago: ${concepto} - $${monto}`,
+      mensajeNotificacion,
       data[0].id
     );
     
@@ -428,7 +456,8 @@ export const validarPago = async ({
   nuevo_estado,
   observaciones,
   metodo_pago,
-  referencia
+  referencia,
+  motivo_rechazo
 }: {
   pago_id: number;
   admin_id: number;
@@ -436,6 +465,7 @@ export const validarPago = async ({
   observaciones?: string;
   metodo_pago?: string;
   referencia?: string;
+  motivo_rechazo?: string;
 }) => {
   try {
     // 1. Obtener el pago actual
@@ -449,16 +479,28 @@ export const validarPago = async ({
 
     // 2. Actualizar el pago
     const updateData: any = {
-      estado: nuevo_estado,
       observaciones: observaciones || null,
       updated_at: getCurrentLocalISOString()
     };
 
-    // Si se marca como pagado, registrar fecha y método
-    if (nuevo_estado === 'pagado') {
-      updateData.fecha_pago = getCurrentLocalISOString();
-      updateData.metodo_pago = metodo_pago || null;
-      updateData.referencia = referencia || null;
+    // Si se rechaza, mantener en estado "pendiente" para que el usuario pueda volver a enviar
+    if (nuevo_estado === 'rechazado') {
+      // IMPORTANTE: Mantener el pago en estado "pendiente" en lugar de "rechazado"
+      // Esto permite que el usuario pueda volver a enviar el comprobante
+      updateData.estado = 'pendiente' as EstadoEnum;
+      updateData.observaciones = motivo_rechazo 
+        ? `RECHAZADO: ${motivo_rechazo}${observaciones ? '. ' + observaciones : ''}`
+        : `RECHAZADO: El comprobante no cumple con los requisitos. Por favor, vuelve a enviar un comprobante válido.${observaciones ? '. ' + observaciones : ''}`;
+    } else {
+      // Para otros estados (aprobado, pagado), usar el estado normalmente
+      updateData.estado = nuevo_estado;
+      
+      // Si se marca como pagado, registrar fecha y método
+      if (nuevo_estado === 'pagado') {
+        updateData.fecha_pago = getCurrentLocalISOString();
+        updateData.metodo_pago = metodo_pago || null;
+        updateData.referencia = referencia || null;
+      }
     }
 
     const { error: updateError } = await supabase
@@ -473,11 +515,12 @@ export const validarPago = async ({
       .from('historial_pagos')
       .insert([{
         pago_id,
-        evento: nuevo_estado,
+        evento: nuevo_estado === 'rechazado' ? 'rechazado' : nuevo_estado,
         usuario_actor_id: admin_id,
         datos: { 
           estado_anterior: pago.estado,
-          estado_nuevo: nuevo_estado,
+          estado_nuevo: nuevo_estado === 'rechazado' ? 'pendiente' : nuevo_estado,
+          motivo_rechazo: motivo_rechazo || null,
           metodo_pago,
           referencia,
           observaciones 
@@ -485,12 +528,28 @@ export const validarPago = async ({
         fecha_evento: getCurrentLocalISOString()
       }]);
 
-    // 4. Notificar al usuario
+    // 4. Notificar al usuario según el estado
     if (pago.usuario_id) {
+      let mensajeNotificacion = '';
+      let tipoNotificacion = 'pago_procesado';
+      
+      if (nuevo_estado === 'rechazado') {
+        tipoNotificacion = 'pago_rechazado';
+        mensajeNotificacion = motivo_rechazo
+          ? `Tu solicitud de pago "${pago.concepto}" ha sido rechazada. Motivo: ${motivo_rechazo}. Por favor, vuelve a enviar un comprobante válido.`
+          : `Tu solicitud de pago "${pago.concepto}" ha sido rechazada. El comprobante no cumple con los requisitos. Por favor, vuelve a enviar un comprobante válido.`;
+      } else if (nuevo_estado === 'aprobado') {
+        mensajeNotificacion = `Tu solicitud de pago "${pago.concepto}" ha sido aprobada.`;
+      } else if (nuevo_estado === 'pagado') {
+        mensajeNotificacion = `Tu pago "${pago.concepto}" ha sido marcado como pagado.`;
+      } else {
+        mensajeNotificacion = `Tu pago "${pago.concepto}" ha sido actualizado a estado: ${nuevo_estado}.`;
+      }
+      
       await crearNotificacion(
         pago.usuario_id,
-        'pago_procesado',
-        `Su pago "${pago.concepto}" ha sido ${nuevo_estado}`,
+        tipoNotificacion,
+        mensajeNotificacion,
         'pagos',
         pago_id
       );
@@ -498,7 +557,9 @@ export const validarPago = async ({
 
     return { 
       success: true, 
-      message: `Pago ${nuevo_estado} exitosamente`,
+      message: nuevo_estado === 'rechazado' 
+        ? 'Pago rechazado. El usuario debe volver a enviar el comprobante.'
+        : `Pago ${nuevo_estado} exitosamente`,
       pago_id 
     };
   } catch (error) {
@@ -2033,5 +2094,440 @@ export const rechazarUsuario = async (
   } catch (error) {
     console.error('Error en rechazarUsuario:', error);
     throw error;
+  }
+};
+
+// Función para verificar que un número de casa pertenece al usuario
+export const verificarNumeroCasaUsuario = async (
+  usuario_id: number,
+  numeroCasa: string
+): Promise<number | null> => {
+  try {
+    // 1. Buscar la vivienda por número de apartamento
+    const { data: vivienda, error: viviendaError } = await supabase
+      .from('viviendas')
+      .select('id, numero_apartamento')
+      .eq('numero_apartamento', numeroCasa.trim())
+      .maybeSingle();
+
+    if (viviendaError || !vivienda) {
+      return null;
+    }
+
+    // 2. Verificar que el usuario está asociado a esta vivienda
+    const { data: usuarioVivienda, error: uvError } = await supabase
+      .from('usuario_vivienda')
+      .select('vivienda_id')
+      .eq('usuario_id', usuario_id)
+      .eq('vivienda_id', vivienda.id)
+      .eq('activo', true)
+      .maybeSingle();
+
+    if (uvError || !usuarioVivienda) {
+      return null;
+    }
+
+    return vivienda.id;
+  } catch (error) {
+    console.error('Error verificando número de casa:', error);
+    return null;
+  }
+};
+
+// Función para crear pago para todos los usuarios de un condominio
+export const crearPagoParaTodosUsuarios = async ({
+  condominio_id,
+  concepto,
+  monto,
+  tipo,
+  fecha_vencimiento,
+  admin_id
+}: {
+  condominio_id: number;
+  concepto: string;
+  monto: number;
+  tipo: TipoPagoEnum | string;
+  fecha_vencimiento?: string;
+  admin_id: number;
+}) => {
+  try {
+    // 1. Obtener todos los usuarios del condominio (menos restrictivo)
+    // Primero intentar obtener usuarios activos con rol
+    let { data: usuarios, error: usuariosError } = await supabase
+      .from('usuarios')
+      .select(`
+        id,
+        condominio_id,
+        Estado,
+        rol,
+        usuario_vivienda(
+          vivienda_id,
+          activo,
+          viviendas(
+            id,
+            condominio_id
+          )
+        )
+      `)
+      .eq('condominio_id', condominio_id)
+      .not('rol', 'is', null); // Solo usuarios aprobados (con rol asignado)
+
+    if (usuariosError) {
+      console.error('❌ Error obteniendo usuarios:', usuariosError);
+      throw usuariosError;
+    }
+
+    console.log(`👥 Usuarios encontrados en condominio ${condominio_id} (con rol):`, usuarios?.length || 0);
+    
+    // Si no hay usuarios con rol, intentar obtener usuarios activos sin restricción de rol
+    if (!usuarios || usuarios.length === 0) {
+      console.log(`⚠️ No se encontraron usuarios con rol, buscando usuarios activos...`);
+      const { data: usuariosActivos, error: errorActivos } = await supabase
+        .from('usuarios')
+        .select(`
+          id,
+          condominio_id,
+          Estado,
+          rol,
+          usuario_vivienda(
+            vivienda_id,
+            activo,
+            viviendas(
+              id,
+              condominio_id
+            )
+          )
+        `)
+        .eq('condominio_id', condominio_id)
+        .eq('Estado', 'Activo');
+      
+      if (!errorActivos && usuariosActivos && usuariosActivos.length > 0) {
+        usuarios = usuariosActivos;
+        console.log(`👥 Usuarios activos encontrados (sin rol):`, usuarios.length);
+      }
+    }
+
+    if (!usuarios || usuarios.length === 0) {
+      console.warn(`⚠️ No se encontraron usuarios para condominio ${condominio_id}. Verificando usuarios sin filtros...`);
+      // Último intento: obtener todos los usuarios del condominio
+      const { data: todosUsuarios, error: errorTodos } = await supabase
+        .from('usuarios')
+        .select(`
+          id,
+          condominio_id,
+          Estado,
+          rol,
+          usuario_vivienda(
+            vivienda_id,
+            activo,
+            viviendas(
+              id,
+              condominio_id
+            )
+          )
+        `)
+        .eq('condominio_id', condominio_id);
+      
+      if (!errorTodos && todosUsuarios && todosUsuarios.length > 0) {
+        console.log(`👥 Todos los usuarios del condominio:`, todosUsuarios.length);
+        // Filtrar solo usuarios que no sean admins
+        usuarios = todosUsuarios.filter((u: any) => u.rol !== 'admin' && u.rol !== 'Administrador');
+        console.log(`👥 Usuarios no-admin:`, usuarios.length);
+      }
+    }
+
+    if (!usuarios || usuarios.length === 0) {
+      console.warn(`⚠️ Condominio ${condominio_id} no tiene usuarios. Continuando con siguiente condominio...`);
+      return {
+        pagosCreados: 0,
+        totalUsuarios: 0,
+        pagos: []
+      };
+    }
+
+    // 2. Preparar pagos para cada usuario
+    const pagosACrear: any[] = [];
+    const tipoMapeado = typeof tipo === 'string' ? mapearTipoPago(tipo) : tipo;
+
+    for (const usuario of usuarios) {
+      // Obtener vivienda activa del usuario
+      let viviendaActiva = usuario.usuario_vivienda?.find(
+        (uv: any) => uv.activo && uv.viviendas?.condominio_id === condominio_id
+      );
+      
+      // Si no tiene vivienda activa, buscar cualquier vivienda en el condominio
+      if (!viviendaActiva && usuario.usuario_vivienda) {
+        viviendaActiva = usuario.usuario_vivienda.find(
+          (uv: any) => uv.viviendas?.condominio_id === condominio_id
+        );
+      }
+
+      // Si aún no tiene vivienda, buscar una vivienda disponible en el condominio
+      let vivienda_id: number | null = null;
+      
+      if (viviendaActiva && viviendaActiva.vivienda_id) {
+        vivienda_id = viviendaActiva.vivienda_id;
+      } else {
+        // Buscar viviendas del condominio disponibles
+        console.warn(`⚠️ Usuario ${usuario.id} no tiene vivienda activa. Buscando vivienda disponible...`);
+        
+        const { data: viviendasDisponibles } = await supabase
+          .from('viviendas')
+          .select('id')
+          .eq('condominio_id', condominio_id)
+          .eq('activo', true)
+          .limit(1);
+        
+        if (viviendasDisponibles && viviendasDisponibles.length > 0) {
+          vivienda_id = viviendasDisponibles[0].id;
+          console.log(`✅ Usando vivienda disponible: ${vivienda_id}`);
+        } else {
+          // Usar null - puede requerir que la BD permita vivienda_id null
+          console.warn(`⚠️ No hay viviendas disponibles para usuario ${usuario.id}. Usando vivienda_id null.`);
+        }
+      }
+
+      // Crear pago (permitir null en vivienda_id)
+      // Verificar si ya existe un pago pendiente con el mismo concepto
+      let queryExistente = supabase
+        .from('pagos')
+        .select('id')
+        .eq('usuario_id', usuario.id)
+        .eq('concepto', concepto)
+        .eq('estado', 'pendiente');
+      
+      if (vivienda_id) {
+        queryExistente = queryExistente.eq('vivienda_id', vivienda_id);
+      } else {
+        queryExistente = queryExistente.is('vivienda_id', null);
+      }
+      
+      const { data: pagoExistente } = await queryExistente.maybeSingle();
+
+      // Solo crear si no existe un pago pendiente con el mismo concepto
+      if (!pagoExistente) {
+        pagosACrear.push({
+          usuario_id: usuario.id,
+          vivienda_id: vivienda_id,
+          concepto,
+          monto,
+          tipo: tipoMapeado,
+          estado: 'pendiente' as EstadoEnum,
+          fecha_vencimiento: fecha_vencimiento || null,
+          fecha_pago: null,
+          referencia: null,
+          metodo_pago: null,
+          comprobante_archivo_id: null,
+          observaciones: null,
+          created_at: getCurrentLocalISOString(),
+          updated_at: getCurrentLocalISOString()
+        });
+        console.log(`✅ Pago preparado para usuario ${usuario.id}, vivienda ${vivienda_id || 'sin vivienda'}`);
+      } else {
+        console.log(`⏭️ Usuario ${usuario.id} ya tiene un pago pendiente con concepto "${concepto}"`);
+      }
+    }
+
+    if (pagosACrear.length === 0) {
+      console.warn(`⚠️ No se crearon pagos para condominio ${condominio_id}. Todos los usuarios ya tienen un pago pendiente con este concepto o no tienen vivienda.`);
+      return {
+        pagosCreados: 0,
+        totalUsuarios: usuarios.length,
+        pagos: []
+      };
+    }
+
+    // 3. Insertar todos los pagos
+    console.log(`📝 Insertando ${pagosACrear.length} pagos...`);
+    const { data: pagosCreados, error: insertError } = await supabase
+      .from('pagos')
+      .insert(pagosACrear)
+      .select(`
+        *,
+        usuarios(*),
+        viviendas(*)
+      `);
+
+    if (insertError) {
+      console.error('❌ Error insertando pagos:', insertError);
+      throw insertError;
+    }
+    
+    console.log(`✅ ${pagosCreados?.length || 0} pagos creados exitosamente`);
+
+    // 4. Crear registros en historial para cada pago
+    const historiales = pagosCreados.map((pago: any) => ({
+      pago_id: pago.id,
+      evento: 'creado',
+      usuario_actor_id: admin_id,
+      datos: { 
+        accion: 'pago_creado_por_admin', 
+        concepto, 
+        monto,
+        condominio_id,
+        usuarios_afectados: pagosCreados.length
+      },
+      fecha_evento: getCurrentLocalISOString()
+    }));
+
+    await supabase
+      .from('historial_pagos')
+      .insert(historiales);
+
+    // 5. Notificar a todos los usuarios afectados
+    for (const pago of pagosCreados) {
+      if (pago.usuario_id) {
+        await crearNotificacion(
+          pago.usuario_id,
+          'nuevo_pago_creado',
+          `Se ha creado un nuevo pago para ti: ${concepto} - $${monto}`,
+          'pagos',
+          pago.id
+        );
+      }
+    }
+
+    return {
+      pagosCreados: pagosCreados.length,
+      totalUsuarios: usuarios.length,
+      pagos: pagosCreados
+    };
+  } catch (error) {
+    console.error('Error en crearPagoParaTodosUsuarios:', error);
+    throw error;
+  }
+};
+
+// Función para crear pago para todos los usuarios de todos los condominios
+export const crearPagoParaTodosCondominios = async ({
+  concepto,
+  monto,
+  tipo,
+  fecha_vencimiento,
+  admin_id
+}: {
+  concepto: string;
+  monto: number;
+  tipo: TipoPagoEnum | string;
+  fecha_vencimiento?: string;
+  admin_id: number;
+}) => {
+  try {
+    // 1. Obtener todos los condominios
+    const { data: condominios, error: condominiosError } = await supabase
+      .from('condominios')
+      .select('id, nombre');
+
+    if (condominiosError) throw condominiosError;
+
+    if (!condominios || condominios.length === 0) {
+      throw new Error('No se encontraron condominios en el sistema');
+    }
+
+    // 2. Crear pagos para cada condominio
+    const resultadosPorCondominio: any[] = [];
+    let totalPagosCreados = 0;
+    let totalUsuarios = 0;
+
+    for (const condominio of condominios) {
+      try {
+        const resultado = await crearPagoParaTodosUsuarios({
+          condominio_id: condominio.id,
+          concepto,
+          monto,
+          tipo,
+          fecha_vencimiento,
+          admin_id
+        });
+
+        resultadosPorCondominio.push({
+          condominio_id: condominio.id,
+          condominio_nombre: condominio.nombre,
+          pagosCreados: resultado.pagosCreados,
+          totalUsuarios: resultado.totalUsuarios
+        });
+
+        totalPagosCreados += resultado.pagosCreados;
+        totalUsuarios += resultado.totalUsuarios;
+      } catch (error: any) {
+        // Si falla un condominio, continuar con los demás
+        console.error(`Error creando pagos para condominio ${condominio.nombre}:`, error);
+        resultadosPorCondominio.push({
+          condominio_id: condominio.id,
+          condominio_nombre: condominio.nombre,
+          error: error.message || 'Error desconocido'
+        });
+      }
+    }
+
+    return {
+      pagosCreados: totalPagosCreados,
+      totalUsuarios,
+      totalCondominios: condominios.length,
+      resultadosPorCondominio
+    };
+  } catch (error) {
+    console.error('Error en crearPagoParaTodosCondominios:', error);
+    throw error;
+  }
+};
+
+// Función para obtener el comprobante de un pago (soporta base64 y URL)
+export const obtenerComprobantePago = async (pago_id: number) => {
+  try {
+    // 1. Obtener el pago con su archivo asociado
+    const { data: pago, error: pagoError } = await supabase
+      .from('pagos')
+      .select(`
+        *,
+        archivos:archivos!pagos_comprobante_archivo_id_fkey(
+          id,
+          url,
+          nombre_original,
+          tipo_mime
+        )
+      `)
+      .eq('id', pago_id)
+      .single();
+    
+    if (pagoError || !pago) {
+      throw new Error('Pago no encontrado');
+    }
+    
+    if (!pago.comprobante_archivo_id) {
+      return {
+        success: false,
+        message: 'Este pago no tiene comprobante adjunto'
+      };
+    }
+    
+    // 2. Obtener información del archivo
+    const archivo = Array.isArray(pago.archivos) ? pago.archivos[0] : pago.archivos;
+    
+    if (!archivo) {
+      return {
+        success: false,
+        message: 'No se pudo obtener la información del comprobante'
+      };
+    }
+    
+    // 3. Determinar si es base64 o URL
+    const esBase64 = archivo.url?.startsWith('data:');
+    
+    return {
+      success: true,
+      url: archivo.url,
+      nombre_original: archivo.nombre_original,
+      tipo_mime: archivo.tipo_mime,
+      esBase64: esBase64 || false,
+      // Si es base64, la URL ya contiene los datos
+      // Si es URL de storage, se puede usar directamente
+    };
+  } catch (error: any) {
+    console.error('Error obteniendo comprobante:', error);
+    return {
+      success: false,
+      message: error.message || 'Error al obtener el comprobante'
+    };
   }
 };

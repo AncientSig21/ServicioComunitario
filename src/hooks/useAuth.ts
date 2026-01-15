@@ -150,7 +150,7 @@ export const useAuth = () => {
 
   // Función para verificar si el usuario está moroso
   const isUserMoroso = () => {
-    return user?.estado === 'Moroso';
+    return user?.Estado === 'Moroso';
   };
 
   // Función para actualizar el estado del usuario desde la base de datos
@@ -161,7 +161,7 @@ export const useAuth = () => {
       // Actualizar la información del usuario incluyendo el estado
       const { data, error } = await supabase
         .from('usuarios')
-        .select('id, nombre, correo, rol, condominio_id, estado')
+        .select('id, nombre, correo, rol, condominio_id, Estado')
         .eq('id', user.id)
         .single();
 
@@ -171,7 +171,8 @@ export const useAuth = () => {
           id: data.id,
           nombre: data.nombre,
           correo: data.correo || user.correo,
-          rol: data.rol || user.rol
+          rol: data.rol || user.rol,
+          Estado: data.Estado || user.Estado
         };
         authService.setCurrentUser(updatedUser);
         setUser(updatedUser);

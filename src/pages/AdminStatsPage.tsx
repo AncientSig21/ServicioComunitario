@@ -41,11 +41,11 @@ const AdminStatsPage = () => {
         setTotalResidentes(totalRes);
 
         // Residentes morosos
-        const morosos = db.usuarios?.filter((u: any) => u.estado === 'Moroso').length || 0;
+        const morosos = db.usuarios?.filter((u: any) => u.Estado === 'Moroso').length || 0;
         setTotalMorosos(morosos);
 
         // Residentes activos
-        const activos = db.usuarios?.filter((u: any) => u.estado === 'Activo').length || 0;
+        const activos = db.usuarios?.filter((u: any) => u.Estado === 'Activo').length || 0;
         setTotalActivos(activos);
       } catch (err: any) {
         setError('Error al obtener estadísticas');

@@ -15,6 +15,11 @@ export const navbarLinks = [
 	},
 	{
 		id: 3,
+		title: 'Foro',
+		href: '/foro',
+	},
+	{
+		id: 4,
 		title: 'Servicios',
 		href: '/tesis',
 	},

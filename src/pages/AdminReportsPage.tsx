@@ -69,7 +69,7 @@ const AdminReportsPage = () => {
 
     // Generar reportes de morosidad
     usuarios.forEach((usuario: any) => {
-      if (usuario.estado === 'Moroso') {
+      if (usuario.Estado === 'Moroso') {
         nuevosReportes.push({
           id: reporteId++,
           tipo: 'morosidad',
@@ -87,7 +87,7 @@ const AdminReportsPage = () => {
 
     // Generar reportes de cambio de estado
     usuarios.forEach((usuario: any) => {
-      if (usuario.estado === 'Moroso') {
+      if (usuario.Estado === 'Moroso') {
         nuevosReportes.push({
           id: reporteId++,
           tipo: 'cambio_estado',
@@ -95,7 +95,7 @@ const AdminReportsPage = () => {
           residente_nombre: usuario.nombre,
           residente_correo: usuario.correo,
           residente_apartamento: usuario.numeroApartamento,
-          descripcion: `Cambio de estado a: ${usuario.estado}`,
+          descripcion: `Cambio de estado a: ${usuario.Estado}`,
           fecha: new Date().toISOString(),
           estado: 'completado',
         });
@@ -291,14 +291,14 @@ const AdminReportsPage = () => {
               placeholder="Buscar por residente, apartamento o descripción..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full border p-2 rounded"
+              className="w-full border border-gray-300 rounded-lg px-4 py-2 text-gray-800 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
             />
           </div>
           <div>
             <select
               value={searchBy}
               onChange={(e) => setSearchBy(e.target.value)}
-              className="w-full border p-2 rounded"
+              className="w-full border border-gray-300 rounded-lg px-4 py-2 text-gray-800 bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
             >
               <option value="residente">Buscar por residente</option>
               <option value="apartamento">Buscar por apartamento</option>
@@ -309,7 +309,7 @@ const AdminReportsPage = () => {
             <select
               value={filtroEstado}
               onChange={(e) => setFiltroEstado(e.target.value)}
-              className="w-full border p-2 rounded"
+              className="w-full border border-gray-300 rounded-lg px-4 py-2 text-gray-800 bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
             >
               <option value="">Todos los estados</option>
               <option value="pendiente">Pendiente</option>
@@ -322,7 +322,7 @@ const AdminReportsPage = () => {
             <select
               value={filtroTipo}
               onChange={(e) => setFiltroTipo(e.target.value)}
-              className="w-full border p-2 rounded"
+              className="w-full border border-gray-300 rounded-lg px-4 py-2 text-gray-800 bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
             >
               <option value="">Todos los tipos</option>
               <option value="pago">Pago</option>
@@ -337,7 +337,7 @@ const AdminReportsPage = () => {
               <select
             value={filtroAccion}
             onChange={(e) => setFiltroAccion(e.target.value)}
-            className="w-full border p-2 rounded"
+            className="w-full border border-gray-300 rounded-lg px-4 py-2 text-gray-800 bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
           >
             <option value="">Todos los períodos</option>
             <option value="ultimas_24h">Últimas 24 horas</option>
@@ -385,7 +385,7 @@ const AdminReportsPage = () => {
                   ) : (
                     paginatedReportes.map((reporte) => (
                       <tr key={reporte.id} className="hover:bg-gray-50">
-                        <td className="px-4 py-3 text-sm">
+                        <td className="px-4 py-3 text-sm text-gray-700">
                           {dayjs(reporte.fecha).format('DD/MM/YYYY HH:mm')}
                         </td>
                         <td className="px-4 py-3">
@@ -395,13 +395,15 @@ const AdminReportsPage = () => {
                         </td>
                         <td className="px-4 py-3 text-sm">
                           <div>
-                            <div className="font-medium">{reporte.residente_nombre || 'N/A'}</div>
+                            <div className="font-medium text-gray-800">{reporte.residente_nombre || 'N/A'}</div>
                             <div className="text-xs text-gray-500">{reporte.residente_correo || ''}</div>
-      </div>
+                          </div>
                         </td>
-                        <td className="px-4 py-3 text-sm">{reporte.residente_apartamento || 'N/A'}</td>
-                        <td className="px-4 py-3 text-sm">{reporte.descripcion}</td>
-                        <td className="px-4 py-3 text-sm">
+                        <td className="px-4 py-3 text-sm text-gray-700">{reporte.residente_apartamento || 'N/A'}</td>
+                        <td className="px-4 py-3 text-sm text-gray-700 max-w-xs truncate" title={reporte.descripcion}>
+                          {reporte.descripcion}
+                        </td>
+                        <td className="px-4 py-3 text-sm text-gray-700 font-medium">
                           {reporte.monto ? `$${reporte.monto.toFixed(2)}` : 'N/A'}
                         </td>
                         <td className="px-4 py-3">

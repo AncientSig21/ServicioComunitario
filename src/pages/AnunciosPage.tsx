@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { BackToHome } from '../components/shared/BackToHome';
 import { ScrollToTop } from '../components/shared/ScrollToTop';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '../hooks/useAuth';
+import { useLocation } from 'react-router-dom';
 
 interface Anuncio {
   id: number;
@@ -83,7 +84,11 @@ const categoriaLabels = {
 
 export const AnunciosPage = () => {
   const { user } = useAuth();
-  const [selectedCategoria, setSelectedCategoria] = useState<string>('todas');
+  const location = useLocation();
+  const isForoPage = location.pathname === '/foro';
+  
+  // Si viene desde /foro, establecer categoría 'foro' por defecto
+  const [selectedCategoria, setSelectedCategoria] = useState<string>(isForoPage ? 'foro' : 'todas');
   const [anuncios, setAnuncios] = useState<Anuncio[]>(anunciosEjemplo);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [nuevoEvento, setNuevoEvento] = useState({
@@ -94,6 +99,13 @@ export const AnunciosPage = () => {
   const [loading, setLoading] = useState(false);
 
   const categorias = ['todas', 'general', 'importante', 'mantenimiento', 'evento', 'foro'];
+
+  // Actualizar categoría si cambia la URL
+  useEffect(() => {
+    if (isForoPage) {
+      setSelectedCategoria('foro');
+    }
+  }, [isForoPage]);
 
   const filteredAnuncios = selectedCategoria === 'todas'
     ? anuncios
@@ -168,10 +180,12 @@ export const AnunciosPage = () => {
           <BackToHome />
           <div className="mt-6">
             <h1 className="text-3xl sm:text-4xl font-bold text-gray-900 mb-2">
-              📢 Anuncios y Noticias
+              {isForoPage ? '💬 Foro de la Comunidad' : '📢 Anuncios y Noticias'}
             </h1>
             <p className="text-gray-600 text-base sm:text-lg">
-              Mantente informado sobre las últimas noticias y avisos de Ciudad Colonial
+              {isForoPage 
+                ? 'Participa en las discusiones y comparte ideas con la comunidad de Ciudad Colonial'
+                : 'Mantente informado sobre las últimas noticias y avisos de Ciudad Colonial'}
             </p>
           </div>
         </div>
