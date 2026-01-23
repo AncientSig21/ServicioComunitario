@@ -1,0 +1,130 @@
+{
+  "libros": [
+    {
+      "id_libro": 1,
+      "titulo": "Introducción a la Ingeniería de Sistemas",
+      "fecha_publicacion": "2023-01-15",
+      "sinopsis": "Una guía completa para estudiantes que inician su carrera en ingeniería de sistemas. Cubre los fundamentos de programación, arquitectura de software y metodologías de desarrollo.",
+      "url_portada": "https://images.unsplash.com/photo-1543002588-bfa74002ed7e?w=400",
+      "tipo": "Físico y Virtual",
+      "especialidad": "Ingeniería de Sistemas",
+      "autores": ["Juan Pérez", "María González"],
+      "cantidadDisponible": 5,
+      "fileUrl": "https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf"
+    },
+    {
+      "id_libro": 2,
+      "titulo": "Fundamentos de Arquitectura",
+      "fecha_publicacion": "2022-08-20",
+      "sinopsis": "Exploración de los principios fundamentales del diseño arquitectónico, desde la historia hasta las tendencias modernas en construcción sostenible.",
+      "url_portada": "https://images.unsplash.com/photo-1487958449943-2429e8be8625?w=400",
+      "tipo": "Físico",
+      "especialidad": "Arquitectura",
+      "autores": ["Carlos Rodríguez"],
+      "cantidadDisponible": 3,
+      "fileUrl": ""
+    },
+    {
+      "id_libro": 3,
+      "titulo": "Programación Avanzada en JavaScript",
+      "fecha_publicacion": "2024-03-10",
+      "sinopsis": "Un libro completo sobre programación moderna en JavaScript, incluyendo ES6+, async/await, y frameworks populares como React y Node.js.",
+      "url_portada": "https://images.unsplash.com/photo-1516321318423-f06f85e504b3?w=400",
+      "tipo": "Virtual",
+      "especialidad": "Programación",
+      "autores": ["Ana Martínez", "Luis Fernández"],
+      "cantidadDisponible": 0,
+      "fileUrl": "https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf"
+    },
+    {
+      "id_libro": 4,
+      "titulo": "Ingeniería Industrial: Procesos y Optimización",
+      "fecha_publicacion": "2023-11-05",
+      "sinopsis": "Análisis detallado de procesos industriales, optimización de producción y gestión de calidad en entornos manufactureros.",
+      "url_portada": "https://images.unsplash.com/photo-1581091226825-a6a2a5aee158?w=400",
+      "tipo": "Físico y Virtual",
+      "especialidad": "Ingeniería Industrial",
+      "autores": ["Roberto Sánchez"],
+      "cantidadDisponible": 8,
+      "fileUrl": "https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf"
+    },
+    {
+      "id_libro": 5,
+      "titulo": "Tesis: Análisis de Sistemas de Control Automático",
+      "fecha_publicacion": "2024-01-20",
+      "sinopsis": "Investigación sobre sistemas de control automático aplicados a procesos industriales, incluyendo análisis de estabilidad y diseño de controladores.",
+      "url_portada": "https://images.unsplash.com/photo-1451187580459-43490279c0fa?w=400",
+      "tipo": "Tesis",
+      "especialidad": "Ingeniería de Control",
+      "autores": ["Pedro López"],
+      "cantidadDisponible": 0,
+      "fileUrl": "https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf"
+    },
+    {
+      "id_libro": 6,
+      "titulo": "Diseño de Circuitos Electrónicos",
+      "fecha_publicacion": "2023-06-12",
+      "sinopsis": "Manual práctico para el diseño y análisis de circuitos electrónicos, desde componentes básicos hasta sistemas complejos.",
+      "url_portada": "https://images.unsplash.com/photo-1518770660439-4636190af475?w=400",
+      "tipo": "Físico",
+      "especialidad": "Electrónica",
+      "autores": ["Laura Torres", "Miguel Herrera"],
+      "cantidadDisponible": 2,
+      "fileUrl": ""
+    },
+    {
+      "id_libro": 7,
+      "titulo": "Construcción Sostenible y Materiales",
+      "fecha_publicacion": "2022-09-30",
+      "sinopsis": "Guía sobre materiales de construcción ecológicos y técnicas de construcción sostenible para el siglo XXI.",
+      "url_portada": "https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?w=400",
+      "tipo": "Virtual",
+      "especialidad": "Construcción",
+      "autores": ["Sofía Ramírez"],
+      "cantidadDisponible": 0,
+      "fileUrl": "https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf"
+    },
+    {
+      "id_libro": 8,
+      "titulo": "Tesis: Machine Learning en Procesos Industriales",
+      "fecha_publicacion": "2024-02-15",
+      "sinopsis": "Aplicación de técnicas de machine learning para optimización y predicción en procesos industriales complejos.",
+      "url_portada": "https://images.unsplash.com/photo-1555255707-c07966088b7b?w=400",
+      "tipo": "Tesis",
+      "especialidad": "Inteligencia Artificial",
+      "autores": ["Diego Morales"],
+      "cantidadDisponible": 0,
+      "fileUrl": "https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf"
+    }
+  ],
+  "usuarios": [
+    {
+      "id": 1,
+      "nombre": "Admin Condominio",
+      "correo": "admin@condominio.com",
+      "contraseña": "admin123",
+      "escuela": "Apto 101 - Propietario",
+      "telefono": "+58 412-1234567",
+      "cedula": "12345678",
+      "numeroApartamento": "Apto 101",
+      "tipoResidencia": "Propietario",
+      "rol": "admin",
+      "estado": "Activo"
+    },
+    {
+      "id": 2,
+      "nombre": "Juan Pérez",
+      "correo": "juan@condominio.com",
+      "contraseña": "usuario123",
+      "escuela": "Apto 205 - Inquilino",
+      "telefono": "+58 414-9876543",
+      "cedula": "87654321",
+      "numeroApartamento": "Apto 205",
+      "tipoResidencia": "Inquilino",
+      "rol": "Usuario",
+      "estado": "Activo"
+    }
+  ],
+  "ordenes": []
+}
+
