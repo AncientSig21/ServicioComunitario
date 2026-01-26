@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Pagination } from '../components/shared/Pagination';
-import { fetchResidentes, fetchCondominios } from '../services/bookService';
+import { fetchResidentes, fetchCondominios, actualizarEstadoUsuario } from '../services/bookService';
+import { useAuth } from '../hooks/useAuth';
+import { FaEdit } from 'react-icons/fa';
 
 interface Residente {
   id: number;
@@ -23,11 +25,16 @@ interface Residente {
 }
 
 const AdminResidentesPage = () => {
+  const { user } = useAuth();
   const [residentes, setResidentes] = useState<Residente[]>([]);
   const [filteredResidentes, setFilteredResidentes] = useState<Residente[]>([]);
   const [condominios, setCondominios] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [residenteSeleccionado, setResidenteSeleccionado] = useState<Residente | null>(null);
+  const [nuevoEstado, setNuevoEstado] = useState<'Activo' | 'Moroso' | 'Inactivo'>('Activo');
+  const [updating, setUpdating] = useState(false);
   
   // Estados para paginación y filtros
   const [currentPage, setCurrentPage] = useState(1);
@@ -117,6 +124,39 @@ const AdminResidentesPage = () => {
     return residente.condominios?.nombre || 'N/A';
   };
 
+  // Función para abrir modal de edición de estado
+  const handleEditarEstado = (residente: Residente) => {
+    setResidenteSeleccionado(residente);
+    setNuevoEstado((residente.estado as 'Activo' | 'Moroso' | 'Inactivo') || 'Activo');
+    setShowEditModal(true);
+  };
+
+  // Función para actualizar el estado del residente
+  const handleActualizarEstado = async () => {
+    if (!user?.id || !residenteSeleccionado) return;
+
+    try {
+      setUpdating(true);
+      setError(null);
+
+      await actualizarEstadoUsuario({
+        usuario_id: residenteSeleccionado.id,
+        estado: nuevoEstado,
+        admin_id: user.id
+      });
+
+      alert(`✅ Estado del residente actualizado a ${nuevoEstado}`);
+      setShowEditModal(false);
+      setResidenteSeleccionado(null);
+      await cargarDatos();
+    } catch (err: any) {
+      console.error('Error actualizando estado:', err);
+      setError(err.message || 'Error al actualizar el estado del residente');
+    } finally {
+      setUpdating(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="max-w-7xl mx-auto">
@@ -200,12 +240,13 @@ const AdminResidentesPage = () => {
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Rol</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Estado</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Rol en Vivienda</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Acciones</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-200">
               {currentResidentes.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="px-4 py-8 text-center text-gray-500">
+                  <td colSpan={9} className="px-4 py-8 text-center text-gray-500">
                     {searchQuery || filtroCondominio || filtroEstado ? 'No se encontraron residentes con los filtros aplicados' : 'No hay residentes registrados'}
                   </td>
                 </tr>
@@ -242,6 +283,16 @@ const AdminResidentesPage = () => {
                         {getRolVivienda(residente)}
                       </span>
                     </td>
+                    <td className="px-4 py-3 text-sm">
+                      <button
+                        onClick={() => handleEditarEstado(residente)}
+                        className="px-3 py-1 bg-yellow-500 text-white rounded text-xs hover:bg-yellow-600 transition-colors flex items-center gap-1"
+                        title="Cambiar estado"
+                      >
+                        <FaEdit />
+                        Cambiar Estado
+                      </button>
+                    </td>
                   </tr>
                 ))
               )}
@@ -262,6 +313,73 @@ const AdminResidentesPage = () => {
           </div>
         )}
       </div>
+
+      {/* Modal de edición de estado */}
+      {showEditModal && residenteSeleccionado && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg p-6 max-w-md w-full">
+            <h2 className="text-xl font-bold text-gray-900 mb-4">Cambiar Estado del Residente</h2>
+            
+            {error && (
+              <div className="mb-4 bg-red-50 border border-red-200 rounded-lg p-3">
+                <p className="text-red-600 text-sm">{error}</p>
+              </div>
+            )}
+
+            <div className="mb-4">
+              <p className="text-sm text-gray-600 mb-2">
+                <span className="font-semibold">Residente:</span> {residenteSeleccionado.nombre}
+              </p>
+              <p className="text-sm text-gray-600 mb-4">
+                <span className="font-semibold">Estado actual:</span>{' '}
+                <span className={`px-2 py-1 rounded text-xs ${
+                  residenteSeleccionado.estado === 'Activo' ? 'bg-green-100 text-green-800' :
+                  residenteSeleccionado.estado === 'Moroso' ? 'bg-red-100 text-red-800' :
+                  residenteSeleccionado.estado === 'Inactivo' ? 'bg-gray-100 text-gray-800' :
+                  'bg-gray-200 text-gray-700'
+                }`}>
+                  {residenteSeleccionado.estado || 'N/A'}
+                </span>
+              </p>
+            </div>
+
+            <div className="mb-6">
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Nuevo Estado <span className="text-red-500">*</span>
+              </label>
+              <select
+                value={nuevoEstado}
+                onChange={(e) => setNuevoEstado(e.target.value as 'Activo' | 'Moroso' | 'Inactivo')}
+                className="w-full bg-white text-gray-900 border border-gray-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              >
+                <option value="Activo">Activo</option>
+                <option value="Moroso">Moroso</option>
+                <option value="Inactivo">Inactivo</option>
+              </select>
+            </div>
+
+            <div className="flex gap-3">
+              <button
+                onClick={handleActualizarEstado}
+                disabled={updating || nuevoEstado === residenteSeleccionado.estado}
+                className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {updating ? 'Actualizando...' : 'Actualizar Estado'}
+              </button>
+              <button
+                onClick={() => {
+                  setShowEditModal(false);
+                  setResidenteSeleccionado(null);
+                  setError(null);
+                }}
+                className="flex-1 px-4 py-2 bg-gray-300 text-gray-700 rounded-lg hover:bg-gray-400 transition-colors font-medium"
+              >
+                Cancelar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

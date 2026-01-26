@@ -32,7 +32,12 @@ export const HomePage = () => {
 		try {
 			setLoadingPagos(true);
 			const pagos = await fetchPagos({ usuario_id: user.id, estado: 'pendiente' });
-			setPagosPendientes(pagos.slice(0, 3)); // Mostrar máximo 3 pagos pendientes
+			// Filtrar pagos completados, cancelados y pagados para que no aparezcan
+			const pagosFiltrados = pagos.filter(pago => {
+				const estado = pago.estado?.toLowerCase();
+				return estado === 'pendiente' || estado === 'vencido' || estado === 'parcial';
+			});
+			setPagosPendientes(pagosFiltrados.slice(0, 3)); // Mostrar máximo 3 pagos pendientes
 		} catch (error) {
 			console.error('Error cargando pagos pendientes:', error);
 		} finally {

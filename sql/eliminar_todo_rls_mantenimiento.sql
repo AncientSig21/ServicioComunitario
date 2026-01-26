@@ -97,3 +97,6 @@ ORDER BY tablename;
 -- Si quieres volver a crear las políticas, ejecuta:
 -- sql/aplicar_rls_mantenimiento.sql
 
+
+
+

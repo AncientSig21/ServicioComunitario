@@ -53,7 +53,13 @@ export const ProgressModal: React.FC<ProgressModalProps> = ({
       setLoading(true);
       setError(null);
       const data = await fetchAvancesMantenimiento(solicitudId);
-      setAvances(data);
+      // Ordenar avances por fecha (más recientes primero)
+      const avancesOrdenados = [...(data || [])].sort((a, b) => {
+        const fechaA = new Date(a.fecha).getTime();
+        const fechaB = new Date(b.fecha).getTime();
+        return fechaB - fechaA; // Orden descendente (más reciente primero)
+      });
+      setAvances(avancesOrdenados);
     } catch (err: any) {
       console.error('Error cargando avances:', err);
       setError(err.message || 'Error al cargar los avances');

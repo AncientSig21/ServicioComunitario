@@ -19,6 +19,11 @@ interface Pago {
   usuarios?: {
     nombre: string;
     correo: string;
+    condominio_id?: number | null;
+    condominios?: {
+      id: number;
+      nombre: string;
+    } | null;
   };
   viviendas?: {
     numero_apartamento: string;
@@ -100,7 +105,32 @@ const AdminPagosPage = () => {
         return esAdminCreado;
       });
       
-      setPagos(pagosAdmin);
+      // Verificar y eliminar duplicados basados en concepto, monto, fecha_vencimiento y usuario_id
+      // Si hay pagos duplicados con el mismo concepto, monto y fecha_vencimiento para el mismo usuario,
+      // mantener solo el más reciente
+      const pagosSinDuplicados = pagosAdmin.reduce((acc: Pago[], pago: Pago) => {
+        const duplicado = acc.find(p => 
+          p.concepto === pago.concepto &&
+          p.monto === pago.monto &&
+          p.fecha_vencimiento === pago.fecha_vencimiento &&
+          p.usuario_id === pago.usuario_id &&
+          p.id !== pago.id
+        );
+        
+        if (!duplicado) {
+          acc.push(pago);
+        } else {
+          // Mantener el más reciente
+          if (new Date(pago.created_at) > new Date(duplicado.created_at)) {
+            const index = acc.indexOf(duplicado);
+            acc[index] = pago;
+          }
+        }
+        
+        return acc;
+      }, []);
+      
+      setPagos(pagosSinDuplicados);
     } catch (err: any) {
       console.error('Error cargando datos:', err);
       setError(err.message || 'Error al cargar los datos');
@@ -397,6 +427,7 @@ const AdminPagosPage = () => {
               <tr>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Concepto</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Usuario</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Condominio</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Apartamento</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Monto</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Tipo</th>
@@ -408,7 +439,7 @@ const AdminPagosPage = () => {
             <tbody className="divide-y divide-gray-200">
               {currentPagos.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="px-4 py-8 text-center text-gray-500">
+                  <td colSpan={9} className="px-4 py-8 text-center text-gray-500">
                     {searchQuery || filtroEstado || filtroTipo ? 'No se encontraron pagos con los filtros aplicados' : 'No hay pagos registrados'}
                   </td>
                 </tr>
@@ -421,6 +452,11 @@ const AdminPagosPage = () => {
                         <div className="font-medium">{pago.usuarios?.nombre || 'N/A'}</div>
                         <div className="text-xs text-gray-500">{pago.usuarios?.correo || ''}</div>
                       </div>
+                    </td>
+                    <td className="px-4 py-3 text-sm text-gray-900">
+                      <span className="px-2 py-1 rounded text-xs bg-indigo-100 text-indigo-800">
+                        {pago.usuarios?.condominios?.nombre || 'N/A'}
+                      </span>
                     </td>
                     <td className="px-4 py-3 text-sm text-gray-900">{pago.viviendas?.numero_apartamento || 'N/A'}</td>
                     <td className="px-4 py-3 text-sm text-gray-900 font-semibold">{formatMonto(pago.monto)}</td>

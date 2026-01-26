@@ -122,3 +122,6 @@ ORDER BY tablename;
 -- DROP FUNCTION IF EXISTS is_admin(INTEGER);
 -- DROP FUNCTION IF EXISTS is_conserje(INTEGER);
 
+
+
+

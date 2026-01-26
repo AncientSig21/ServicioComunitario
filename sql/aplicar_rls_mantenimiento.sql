@@ -284,3 +284,6 @@ END $$;
 -- ✅ Los conserjes pueden gestionar solicitudes de su condominio
 
 
+
+
+

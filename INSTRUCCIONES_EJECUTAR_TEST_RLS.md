@@ -116,3 +116,6 @@ Después de ejecutar las pruebas:
 2. Si algunas fallan: Revisa los mensajes de error y ajusta las políticas en Supabase
 3. Si necesitas ayuda: Revisa los detalles expandibles en la página de resultados
 
+
+
+

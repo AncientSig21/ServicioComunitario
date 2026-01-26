@@ -199,6 +199,55 @@ export const fetchResidentes = async (condominioId?: number) => {
   }
 };
 
+// Función para actualizar el estado de un usuario
+export const actualizarEstadoUsuario = async ({
+  usuario_id,
+  estado,
+  admin_id
+}: {
+  usuario_id: number;
+  estado: 'Activo' | 'Moroso' | 'Inactivo';
+  admin_id: number;
+}) => {
+  try {
+    // Verificar que el usuario que hace la actualización es administrador
+    const { data: admin, error: adminError } = await supabase
+      .from('usuarios')
+      .select('rol')
+      .eq('id', admin_id)
+      .single();
+    
+    if (adminError || !admin || admin.rol?.toLowerCase() !== 'admin') {
+      throw new Error('Solo los administradores pueden actualizar el estado de los usuarios');
+    }
+
+    // Actualizar el estado del usuario
+    const { data: usuarioActualizado, error: updateError } = await supabase
+      .from('usuarios')
+      .update({ 
+        Estado: estado,
+        updated_at: getCurrentLocalISOString()
+      })
+      .eq('id', usuario_id)
+      .select()
+      .single();
+
+    if (updateError) {
+      console.error('Error actualizando estado del usuario:', updateError);
+      throw new Error('Error al actualizar el estado del usuario');
+    }
+
+    return {
+      success: true,
+      message: `Estado del usuario actualizado a ${estado}`,
+      usuario: usuarioActualizado
+    };
+  } catch (error) {
+    console.error('Error en actualizarEstadoUsuario:', error);
+    throw error;
+  }
+};
+
 export const registerResidente = async (userData: {
   nombre: string;
   correo: string;
@@ -292,7 +341,10 @@ export const fetchPagos = async (filters?: {
       .from('pagos')
       .select(`
         *,
-        usuarios(*),
+        usuarios(
+          *,
+          condominios(*)
+        ),
         viviendas(*),
         archivos!pagos_comprobante_archivo_id_fkey(*)
       `)

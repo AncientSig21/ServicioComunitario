@@ -159,3 +159,6 @@ AND policyname = 'Usuarios ven sus solicitudes de mantenimiento';
 -- ✅ Si todas las verificaciones muestran los valores esperados,
 --    las políticas RLS están correctamente configuradas
 
+
+
+

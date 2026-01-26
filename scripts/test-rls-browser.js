@@ -49,3 +49,6 @@ const testRLSFromConsole = async () => {
 // Ejecutar automáticamente si se pega en la consola
 testRLSFromConsole();
 
+
+
+
