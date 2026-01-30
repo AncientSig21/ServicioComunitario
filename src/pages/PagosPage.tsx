@@ -1,9 +1,10 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
+import { useLocation } from 'react-router-dom';
 import { BackToHome } from '../components/shared/BackToHome';
 import { ScrollToTop } from '../components/shared/ScrollToTop';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '../hooks/useAuth';
-import { solicitarPago, obtenerViviendaUsuario, subirArchivoComprobante, fetchPagos, editarPago } from '../services/bookService';
+import { solicitarPago, actualizarPagoConComprobante, obtenerViviendaUsuario, subirArchivoComprobante, fetchPagos, editarPago, crearNotificacion, obtenerAbonosDisponibles, crearPagoRestante, aplicarAbonoAPagoEspecifico } from '../services/bookService';
 import { supabase } from '../supabase/client';
 
 interface Pago {
@@ -113,7 +114,9 @@ const tipoLabels = {
 };
 
 export const PagosPage = () => {
-  const { user } = useAuth();
+  const { user, isUserMoroso } = useAuth();
+  const location = useLocation();
+  const pagoIdMorosoFromState = (location.state as { pagoIdMoroso?: number })?.pagoIdMoroso;
   const [selectedEstado, setSelectedEstado] = useState<string>('todos');
   const [pagos, setPagos] = useState<Pago[]>([]);
   const [loadingPago, setLoadingPago] = useState<number | null>(null);
@@ -124,6 +127,7 @@ export const PagosPage = () => {
   const [showDetallesModal, setShowDetallesModal] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [abonoDisponible, setAbonoDisponible] = useState<number>(0);
   const [formPago, setFormPago] = useState({
     nombre: '',
     numero_casa: '',
@@ -134,14 +138,26 @@ export const PagosPage = () => {
     metodo_pago: '',
     comprobante: null as File | null,
   });
+  const [usarAbonoEnPago, setUsarAbonoEnPago] = useState(false);
   const [formEditPago, setFormEditPago] = useState({
     concepto: '',
     monto: '',
     tipo: 'mantenimiento' as string,
     fecha_vencimiento: '',
   });
+  // Solo para la tarjeta "Total Pagado": si el usuario pulsó "Reiniciar total", mostramos 0 (no afecta lista ni otros totales).
+  const [pagadoMostrarCero, setPagadoMostrarCero] = useState(() => {
+    if (typeof window === 'undefined' || !user?.id) return false;
+    return localStorage.getItem(`pagos_pagado_mostrar_cero_${user.id}`) === '1';
+  });
 
   const estados = ['todos', 'pendiente', 'pagado', 'vencido', 'parcial', 'rechazado'];
+
+  useEffect(() => {
+    if (user?.id && typeof window !== 'undefined') {
+      setPagadoMostrarCero(localStorage.getItem(`pagos_pagado_mostrar_cero_${user.id}`) === '1');
+    }
+  }, [user?.id]);
 
   // Cargar pagos reales de la base de datos
   useEffect(() => {
@@ -165,7 +181,7 @@ export const PagosPage = () => {
       }
       
       // Mapear datos de la BD al formato esperado
-      const pagosMapeados: Pago[] = pagosData.map((p: any) => {
+      const pagosMapeados = pagosData.map((p: any) => {
         try {
           // Obtener abono (campo real en la BD)
           const montoPagado = p.abono !== undefined && p.abono !== null 
@@ -179,9 +195,9 @@ export const PagosPage = () => {
           // Verificar si el pago está completo
           const montoTotal = parseFloat(p.monto || 0);
           
-          // IMPORTANTE: Si el estado en la BD es 'pagado', respetarlo siempre
-          // Si el abono >= montoTotal, el estado debe ser 'pagado' (aunque en la BD pueda estar como 'pendiente')
-          if (estadoMapeado === 'pagado' || (montoPagado >= montoTotal && montoTotal > 0)) {
+          // Solo mostrar como 'pagado' cuando el admin ya validó (estado en BD = 'pagado').
+          // No marcar como pagado solo por abono >= monto, para que "pendiente de validación" se vea como pendiente.
+          if (estadoMapeado === 'pagado') {
             estadoMapeado = 'pagado';
           } else if (montoPagado > 0 && montoPagado < montoTotal && estadoMapeado !== 'pagado') {
             // Si hay monto pagado pero no está completo, marcar como "parcial" para la UI
@@ -219,10 +235,10 @@ export const PagosPage = () => {
           console.error('Error mapeando pago:', err, p);
           return null;
         }
-      }).filter((p: Pago | null): p is Pago => p !== null);
-      
+      }).filter((p: Pago | null): p is Pago => p !== null) as Pago[];
+
       // Filtrar pagos: mostrar pagos parciales y restantes en lugar del pago del admin con abono
-      const pagosFiltrados = pagosMapeados.filter((pago, index, self) => {
+      const pagosFiltrados = pagosMapeados.filter((pago, _index, self) => {
         // Si es un pago creado por administrador
         if (pago.creado_por_admin) {
           // Verificar si hay pagos parciales o restantes relacionados
@@ -260,6 +276,15 @@ export const PagosPage = () => {
       });
       
       setPagos(pagosFiltrados);
+
+      // Cargar abono disponible (excedentes aprobados que se descontarán de próximas cuotas)
+      try {
+        const abono = await obtenerAbonosDisponibles(user.id);
+        setAbonoDisponible(abono);
+      } catch (abonoErr) {
+        console.warn('Error obteniendo abono disponible:', abonoErr);
+        setAbonoDisponible(0);
+      }
     } catch (error: any) {
       console.error('Error cargando pagos:', error);
       setError(error.message || 'Error al cargar los pagos. Por favor, intenta de nuevo.');
@@ -272,6 +297,34 @@ export const PagosPage = () => {
   const filteredPagos = selectedEstado === 'todos'
     ? pagos
     : pagos.filter(pago => pago.estado === selectedEstado);
+
+  const pagosVencidos = pagos.filter(p => p.estado === 'vencido');
+  const isMoroso = isUserMoroso();
+
+  // Si el usuario llegó desde MorosoBlock con un pago seleccionado, abrir el modal de comprobante una sola vez
+  const hasAutoOpenedMorosoRef = useRef(false);
+  useEffect(() => {
+    if (!pagoIdMorosoFromState || !user || pagos.length === 0 || hasAutoOpenedMorosoRef.current) return;
+    const pago = pagos.find(p => p.id === pagoIdMorosoFromState);
+    if (pago) {
+      hasAutoOpenedMorosoRef.current = true;
+      const restantePago = pago.monto - (pago.abono ?? pago.monto_pagado ?? 0);
+      setPagoSeleccionado(pago);
+      setFormPago({
+        nombre: user.nombre || '',
+        numero_casa: '',
+        concepto: pago.concepto,
+        monto: restantePago > 0 ? restantePago.toFixed(2) : pago.monto.toString(),
+        referencia: '',
+        descripcion: '',
+        metodo_pago: '',
+        comprobante: null,
+      });
+      setUsarAbonoEnPago(false);
+      setShowPagoModal(true);
+      window.history.replaceState({}, '', '/pagos');
+    }
+  }, [pagoIdMorosoFromState, user?.id, pagos]);
 
   const formatFecha = (fecha: string) => {
     const date = new Date(fecha);
@@ -315,32 +368,36 @@ export const PagosPage = () => {
         }
       }
       
+      const restantePago = pago.monto - (pago.abono ?? pago.monto_pagado ?? 0);
       setPagoSeleccionado(pago);
       setFormPago({ 
         nombre: nombreUsuario,
         numero_casa: numeroCasa,
         concepto: pago.concepto,
-        monto: pago.monto.toString(),
+        monto: restantePago > 0 ? restantePago.toFixed(2) : pago.monto.toString(),
         referencia: '', 
         descripcion: '', 
         metodo_pago: '',
         comprobante: null 
       });
+      setUsarAbonoEnPago(false);
       setShowPagoModal(true);
     } catch (error) {
       console.error('Error obteniendo información:', error);
-    setPagoSeleccionado(pago);
+      const restantePago = pago.monto - (pago.abono ?? pago.monto_pagado ?? 0);
+      setPagoSeleccionado(pago);
       setFormPago({ 
         nombre: user.nombre || '',
         numero_casa: '',
         concepto: pago.concepto,
-        monto: pago.monto.toString(),
+        monto: restantePago > 0 ? restantePago.toFixed(2) : pago.monto.toString(),
         referencia: '', 
         descripcion: '', 
         metodo_pago: '',
         comprobante: null 
       });
-    setShowPagoModal(true);
+      setUsarAbonoEnPago(false);
+      setShowPagoModal(true);
     }
   };
 
@@ -363,8 +420,13 @@ export const PagosPage = () => {
       return;
     }
 
-    if (!formPago.monto || parseFloat(formPago.monto) <= 0) {
-      alert('Por favor ingresa un monto válido mayor a 0');
+    const montoNum = parseFloat(formPago.monto || '0');
+    if (montoNum < 0) {
+      alert('Por favor ingresa un monto válido (no negativo).');
+      return;
+    }
+    if (!usarAbonoEnPago && montoNum <= 0) {
+      alert('Por favor ingresa un monto mayor a 0, o marca "Usar mi abono disponible" si quieres pagar con tu abono.');
       return;
     }
 
@@ -407,101 +469,108 @@ export const PagosPage = () => {
         }
       }
 
-      // 3. Si el pago fue creado por administrador, crear pagos del usuario para validación
+      // 3. Si el pago fue creado por administrador: actualizar el mismo pago (no crear uno nuevo).
+      // Así solo existe un registro; el admin lo valida y queda completado o rechazado.
       if (pagoSeleccionado.creado_por_admin) {
-        const montoAbono = parseFloat(formPago.monto);
+        const montoIngresado = parseFloat(formPago.monto); // Monto a pagar con comprobante (puede ser 0 si usa todo el abono)
         const montoTotal = pagoSeleccionado.monto;
-        const montoActualPagado = pagoSeleccionado.abono || pagoSeleccionado.monto_pagado || 0;
-        const montoRestante = montoTotal - montoActualPagado;
+        let montoActualPagado = pagoSeleccionado.abono || pagoSeleccionado.monto_pagado || 0;
+        const restanteInicial = montoTotal - montoActualPagado;
+
+        // Si el usuario eligió "Usar abono disponible", aplicar ese abono al pago primero
+        let abonoAplicadoDelUsuario = 0;
+        if (usarAbonoEnPago && abonoDisponible > 0 && restanteInicial > 0) {
+          abonoAplicadoDelUsuario = Math.min(abonoDisponible, restanteInicial);
+          await aplicarAbonoAPagoEspecifico(user.id, pagoSeleccionado.id, abonoAplicadoDelUsuario);
+          montoActualPagado += abonoAplicadoDelUsuario;
+        }
+
+        const restanteDespuesDeAbono = montoTotal - montoActualPagado;
+        let montoAbono = montoIngresado; // Monto que paga con comprobante
+        let excedente = 0;
         
-        // VALIDACIÓN: El monto a pagar no debe exceder el restante
-        if (montoAbono > montoRestante) {
-          alert(`El monto no puede ser mayor al restante. Restante: ${formatMonto(montoRestante)}`);
+        if (montoIngresado > restanteDespuesDeAbono) {
+          excedente = montoIngresado - restanteDespuesDeAbono;
+          montoAbono = restanteDespuesDeAbono;
+          alert(`⚠️ El monto ingresado (${formatMonto(montoIngresado)}) excede el restante de la cuota (${formatMonto(restanteDespuesDeAbono)}).\n\n` +
+                `Se aplicará ${formatMonto(restanteDespuesDeAbono)} al pago actual.\n` +
+                `El excedente de ${formatMonto(excedente)} se guardará como abono y se aplicará a tus próximas cuotas.`);
+        }
+        
+        if (montoAbono < 0) {
+          alert('El monto a pagar no puede ser negativo');
           setLoadingPago(null);
           return;
         }
         
-        // Crear un pago del usuario con el monto parcial enviado
-        // Este pago aparecerá en validación del administrador
-        const conceptoPagoParcial = `${pagoSeleccionado.concepto} - Pago Parcial`;
+        // Nuevo abono acumulado en este pago (abono aplicado + monto con comprobante; excedente se aplica aparte)
+        const nuevoAbono = Math.min(montoActualPagado + montoAbono, montoTotal);
+        const observacionesTexto = formPago.descripcion?.trim() || '';
+        const observacionesConDetalle = observacionesTexto +
+          (observacionesTexto ? '\n\n' : '') +
+          `Monto aplicado a esta cuota: ${formatMonto(montoAbono)}` +
+          (excedente > 0 ? `. Excedente (abono para otras cuotas): ${formatMonto(excedente)}` : '');
         
-        await solicitarPago({
+        await actualizarPagoConComprobante({
+          pago_id: pagoSeleccionado.id,
           usuario_id: user.id,
-          vivienda_id: vivienda_id,
-          concepto: conceptoPagoParcial,
-          monto: montoAbono,
-          tipo: pagoSeleccionado.tipo,
-          fecha_vencimiento: pagoSeleccionado.fechaVencimiento,
-          archivo_comprobante_id: archivo_comprobante_id || undefined,
-          referencia: formPago.referencia,
-          metodo_pago: formPago.metodo_pago,
-          observaciones: formPago.descripcion || `Pago parcial de ${pagoSeleccionado.concepto}. Monto total: ${formatMonto(montoTotal)}`,
+          referencia: formPago.referencia.trim() || null,
+          metodo_pago: formPago.metodo_pago?.trim() || null,
+          comprobante_archivo_id: archivo_comprobante_id ?? null,
+          observaciones: observacionesConDetalle.trim() || null,
+          abono: nuevoAbono,
         });
         
-        // Si el pago es parcial (no completa el total), crear otro pago para el restante
-        const nuevoAbono = montoActualPagado + montoAbono;
-        const montoRestanteDespues = montoTotal - nuevoAbono;
-        
-        if (nuevoAbono < montoTotal && montoRestanteDespues > 0) {
-          // Crear un pago para el restante que el usuario debe pagar
-          const conceptoPagoRestante = `${pagoSeleccionado.concepto} - Restante`;
-          
-          await solicitarPago({
-            usuario_id: user.id,
-            vivienda_id: vivienda_id,
-            concepto: conceptoPagoRestante,
-            monto: montoRestanteDespues,
-            tipo: pagoSeleccionado.tipo,
-            fecha_vencimiento: pagoSeleccionado.fechaVencimiento,
-            archivo_comprobante_id: undefined, // Sin comprobante porque aún no se ha pagado
-            referencia: undefined,
-            metodo_pago: undefined,
-            observaciones: `Pago restante de ${pagoSeleccionado.concepto}. Monto total original: ${formatMonto(montoTotal)}, ya pagado: ${formatMonto(nuevoAbono)}`,
-          });
-          
-          // Actualizar el abono en el pago del administrador
-          await supabase
-            .from('pagos')
-            .update({ 
-              abono: nuevoAbono,
-              updated_at: new Date().toISOString()
-            })
-            .eq('id', pagoSeleccionado.id);
-          
-          alert(`✅ Pago parcial de ${formatMonto(montoAbono)} registrado exitosamente.\n\n` +
-                `El pago parcial aparecerá en la sección de validación de pagos.\n` +
-                `Se ha creado un nuevo pago para el restante: ${formatMonto(montoRestanteDespues)}`);
-        } else {
-          // El pago completa el total, solo mostrar mensaje de éxito
-          // Actualizar el abono en el pago del administrador
-          await supabase
-            .from('pagos')
-            .update({ 
-              abono: montoTotal,
-              estado: 'pagado',
-              fecha_pago: new Date().toISOString(),
-              updated_at: new Date().toISOString()
-            })
-            .eq('id', pagoSeleccionado.id);
-          
-          alert(`✅ Pago completado exitosamente.\n\n` +
-                `Total pagado: ${formatMonto(montoTotal)}\n\n` +
-                `El pago aparecerá en la sección de validación de pagos para que el administrador lo revise.`);
+        if (excedente > 0) {
+          try {
+            await crearNotificacion(
+              user.id,
+              'excedente_abono',
+              `Se ha registrado un excedente de ${formatMonto(excedente)} en tu pago de "${pagoSeleccionado.concepto}". El administrador lo verá al validar; al aprobar, se aplicará a tus próximas cuotas.`,
+              'pagos',
+              pagoSeleccionado.id,
+              'Excedente registrado como abono'
+            );
+          } catch (notifError) {
+            console.error('Error creando notificación:', notifError);
+          }
+          // El excedente se aplicará a próximas cuotas cuando el administrador apruebe el pago (en validarPago).
         }
         
-        // Recargar pagos después de crear los nuevos pagos
+        const quedaRestante = montoTotal - nuevoAbono > 0;
+        const montoRestante = montoTotal - nuevoAbono;
+
+        // Si hay resto por pagar, crear un pago "Restante" para que aparezca y el usuario pueda enviar comprobante
+        if (quedaRestante && montoRestante > 0) {
+          try {
+            await crearPagoRestante({
+              usuario_id: user.id,
+              vivienda_id,
+              parent_pago_id: pagoSeleccionado.id,
+              concepto_base: pagoSeleccionado.concepto,
+              monto_restante: montoRestante,
+              monto_total_original: montoTotal,
+              abono_ya_aplicado: nuevoAbono,
+              tipo: pagoSeleccionado.tipo,
+              fecha_vencimiento: pagoSeleccionado.fechaVencimiento,
+            });
+          } catch (errRestante) {
+            console.warn('Error creando pago restante (no crítico):', errRestante);
+          }
+        }
+
+        alert(
+          `✅ Pago registrado correctamente.\n\n` +
+          `Monto aplicado: ${formatMonto(montoAbono)}${excedente > 0 ? `\n💰 Excedente ${formatMonto(excedente)} aplicado a otras cuotas.` : ''}\n\n` +
+          `Este pago queda en validación.${quedaRestante ? ` Se ha creado un pago por el restante (${formatMonto(montoRestante)}) para que puedas enviar el comprobante y validarlo.` : ' Cuando el administrador lo apruebe, quedará completado.'}`
+        );
+        
         setTimeout(async () => {
           try {
             await cargarPagos();
           } catch (err) {
-            console.error('Error recargando pagos después de crear pagos:', err);
-            setTimeout(async () => {
-              try {
-                await cargarPagos();
-              } catch (err2) {
-                console.error('Error en segundo intento de recarga:', err2);
-              }
-            }, 1000);
+            console.error('Error recargando pagos:', err);
+            setTimeout(() => cargarPagos(), 1000);
           }
         }, 300);
       } else {
@@ -510,7 +579,21 @@ export const PagosPage = () => {
         const esPagoRestante = concepto.includes('Restante');
         
         if (esPagoRestante) {
-          // Actualizar el pago restante existente con todos los datos
+          const montoRestantePago = pagoSeleccionado.monto;
+          const abonoActualRestante = pagoSeleccionado.abono ?? pagoSeleccionado.monto_pagado ?? 0;
+          const restanteAPagar = montoRestantePago - abonoActualRestante;
+
+          // Si el usuario eligió "Usar abono disponible", aplicar abono al pago Restante primero
+          let abonoAplicadoRestante = 0;
+          if (usarAbonoEnPago && abonoDisponible > 0 && restanteAPagar > 0) {
+            abonoAplicadoRestante = Math.min(abonoDisponible, restanteAPagar);
+            await aplicarAbonoAPagoEspecifico(user.id, pagoSeleccionado.id, abonoAplicadoRestante);
+          }
+
+          const montoConComprobante = parseFloat(formPago.monto || '0');
+          const nuevoAbonoRestante = abonoActualRestante + abonoAplicadoRestante + montoConComprobante;
+
+          // Actualizar el pago restante existente con todos los datos (incl. abono si se aplicó abono o monto con comprobante)
           const updateData: any = {
             referencia: formPago.referencia,
             metodo_pago: formPago.metodo_pago,
@@ -518,6 +601,9 @@ export const PagosPage = () => {
             comprobante_archivo_id: archivo_comprobante_id || null,
             updated_at: new Date().toISOString()
           };
+          if (abonoAplicadoRestante > 0 || montoConComprobante > 0) {
+            updateData.abono = Math.min(nuevoAbonoRestante, montoRestantePago);
+          }
           
           // Actualizar el archivo del comprobante si existe
           if (archivo_comprobante_id) {
@@ -537,6 +623,7 @@ export const PagosPage = () => {
           }
           
           alert(`✅ Pago restante registrado exitosamente.\n\n` +
+                (abonoAplicadoRestante > 0 ? `Se aplicó ${formatMonto(abonoAplicadoRestante)} de tu abono. ` : '') +
                 `El pago aparecerá en la sección de validación de pagos para que el administrador lo revise.`);
         } else {
           // Si NO es un pago restante, crear un nuevo pago como antes
@@ -673,15 +760,17 @@ export const PagosPage = () => {
 
   // Calcular total pagado (incluye pagos completos y parciales)
   const totalPagado = pagos.reduce((sum, p) => {
-    // Usar 'abono' que es el campo real en la BD, con fallback a monto_pagado para compatibilidad
     const montoPagado = p.abono !== undefined && p.abono !== null ? p.abono : (p.monto_pagado || 0);
     const montoTotal = p.monto;
     const esParcial = p.estado === 'parcial' || (montoPagado > 0 && montoPagado < montoTotal);
-    
+    const esRestantePagado = p.estado === 'pagado' && (p.concepto || '').includes('Restante') && (p.observaciones || '').includes('Monto total original:');
+    const montoTotalOriginalRestante = esRestantePagado && p.observaciones
+      ? (() => { const m = p.observaciones.match(/Monto total original:\s*([\d.,]+)/); return m ? parseFloat(m[1].replace(',', '.')) : p.monto; })()
+      : p.monto;
+
     if (p.estado === 'pagado') {
-      return sum + montoTotal; // Pago completo
+      return sum + (esRestantePagado ? montoTotalOriginalRestante : montoTotal);
     } else if (esParcial) {
-      // Para pagos parciales, contar solo lo que se ha pagado
       return sum + montoPagado;
     }
     return sum;
@@ -712,6 +801,29 @@ export const PagosPage = () => {
           </div>
         </div>
 
+        {/* Aviso moroso: estás bloqueado; estos son los pagos por los que debes enviar comprobante */}
+        {isMoroso && pagosVencidos.length > 0 && (
+          <div className="mb-6 bg-red-50 border-2 border-red-300 rounded-lg p-5">
+            <h2 className="text-lg font-bold text-red-900 mb-2">
+              ⚠️ Cuenta bloqueada (moroso)
+            </h2>
+            <p className="text-red-800 mb-3">
+              Para poder ingresar al resto de la aplicación debes enviar el comprobante de pago. A continuación se muestran los pagos por los cuales estás bloqueado. Selecciona el pago correspondiente y envía el comprobante con el mismo formato de abajo.
+            </p>
+            <p className="text-sm font-semibold text-red-900 mb-2">Pagos por los que estás bloqueado:</p>
+            <ul className="list-disc list-inside space-y-1 text-red-800 mb-2">
+              {pagosVencidos.map((p) => (
+                <li key={p.id}>
+                  <strong>{p.concepto}</strong> — {formatMonto(p.monto)} (vencimiento: {formatFecha(p.fechaVencimiento)})
+                </li>
+              ))}
+            </ul>
+            <p className="text-sm text-red-700">
+              Haz clic en &quot;Enviar comprobante&quot; en el pago que corresponda a tu comprobante y completa el formulario.
+            </p>
+          </div>
+        )}
+
         {/* Mostrar error si existe */}
         {error && (
           <div className="mb-4 bg-red-50 border border-red-200 rounded-lg p-4">
@@ -730,22 +842,68 @@ export const PagosPage = () => {
           </div>
         )}
 
-        {/* Resumen de pagos */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
+        {/* Resumen de pagos: Total Pagado | Abono disponible (si > 0) | Total Pendiente */}
+        <div className={`grid gap-4 mb-8 ${abonoDisponible > 0 ? 'grid-cols-1 md:grid-cols-3' : 'grid-cols-1 md:grid-cols-2'}`}>
           <div className="bg-white rounded-lg shadow-md p-6 border-l-4 border-green-500">
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm text-gray-600 mb-1">Total Pagado</p>
-                <p className="text-2xl font-bold text-green-600">{formatMonto(totalPagado)}</p>
+                <p className="text-2xl font-bold text-green-600">
+                  {pagadoMostrarCero ? formatMonto(0) : formatMonto(totalPagado)}
+                </p>
+                {pagadoMostrarCero && (
+                  <p className="text-xs text-gray-500 mt-1">Reiniciado (los pagos siguen en la lista)</p>
+                )}
               </div>
               <div className="text-4xl">✅</div>
             </div>
+            {pagadoMostrarCero ? (
+              <button
+                type="button"
+                onClick={() => {
+                  if (user?.id && typeof window !== 'undefined') {
+                    localStorage.removeItem(`pagos_pagado_mostrar_cero_${user.id}`);
+                    setPagadoMostrarCero(false);
+                  }
+                }}
+                className="mt-3 text-xs text-gray-500 hover:text-gray-700 underline"
+              >
+                Restaurar total
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => {
+                  if (user?.id && typeof window !== 'undefined') {
+                    localStorage.setItem(`pagos_pagado_mostrar_cero_${user.id}`, '1');
+                    setPagadoMostrarCero(true);
+                  }
+                }}
+                className="mt-3 text-xs text-gray-500 hover:text-gray-700 underline"
+              >
+                Reiniciar total
+              </button>
+            )}
           </div>
+          {abonoDisponible > 0 && (
+            <div className="bg-white rounded-lg shadow-md p-6 border-l-4 border-blue-500">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm text-gray-600 mb-1">Abono disponible</p>
+                  <p className="text-2xl font-bold text-blue-600">{formatMonto(abonoDisponible)}</p>
+                  <p className="text-xs text-gray-500 mt-1">Se descontará de tu próxima cuota pendiente o del pago que cree el administrador.</p>
+                </div>
+                <div className="text-4xl">💰</div>
+              </div>
+            </div>
+          )}
           <div className="bg-white rounded-lg shadow-md p-6 border-l-4 border-red-500">
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm text-gray-600 mb-1">Total Pendiente</p>
-                <p className="text-2xl font-bold text-red-600">{formatMonto(totalPendiente)}</p>
+                <p className="text-2xl font-bold text-red-600">
+                  {formatMonto(totalPendiente)}
+                </p>
               </div>
               <div className="text-4xl">⚠️</div>
             </div>
@@ -891,7 +1049,12 @@ export const PagosPage = () => {
                     const concepto = pago.concepto || '';
                     const esPagoParcial = concepto.includes('Pago Parcial');
                     const esPagoRestante = concepto.includes('Restante');
-                    
+                    // Si ya envió comprobante (referencia + archivo), el pago está en validación: no permitir enviar otro
+                    const yaEnvioComprobante =
+                      (pago.referencia && (pago.referencia?.trim() ?? '') !== '') &&
+                      ((pago.comprobante_archivo_id != null && pago.comprobante_archivo_id !== undefined) ||
+                        (pago.comprobante_url != null && pago.comprobante_url !== undefined));
+
                     // Si es un pago parcial (ya se envió el comprobante), solo mostrar "Esperando validación"
                     if (esPagoParcial && pago.estado === 'pendiente') {
                       return (
@@ -957,6 +1120,25 @@ export const PagosPage = () => {
                     
                     // Para pagos pendientes normales (no parciales ni restantes) y no creados por admin
                     if (pago.estado === 'pendiente' && !pago.creado_por_admin && !esPagoParcial && !esPagoRestante) {
+                      // Si ya envió comprobante, está en validación: no permitir enviar otro
+                      if (yaEnvioComprobante) {
+                        return (
+                          <>
+                            <button 
+                              onClick={() => {
+                                setPagoSeleccionado(pago);
+                                setShowDetallesModal(true);
+                              }}
+                              className="px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors font-medium text-sm"
+                            >
+                              Ver Detalles
+                            </button>
+                            <div className="px-4 py-2 bg-yellow-100 text-yellow-800 rounded-lg text-sm font-medium text-center">
+                              ⏳ Esperando validación
+                            </div>
+                          </>
+                        );
+                      }
                       return (
                         <>
                           <button 
@@ -987,6 +1169,25 @@ export const PagosPage = () => {
                     
                     // Para pagos pendientes creados por admin (no parciales ni restantes)
                     if (pago.estado === 'pendiente' && pago.creado_por_admin && !esPagoParcial && !esPagoRestante) {
+                      // Si ya envió comprobante, está en validación: no permitir enviar otro
+                      if (yaEnvioComprobante) {
+                        return (
+                          <>
+                            <button 
+                              onClick={() => {
+                                setPagoSeleccionado(pago);
+                                setShowDetallesModal(true);
+                              }}
+                              className="px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors font-medium text-sm"
+                            >
+                              Ver Detalles
+                            </button>
+                            <div className="px-4 py-2 bg-yellow-100 text-yellow-800 rounded-lg text-sm font-medium text-center">
+                              ⏳ Esperando validación
+                            </div>
+                          </>
+                        );
+                      }
                       return (
                         <button 
                           onClick={() => handleAbrirModalPago(pago)}
@@ -1000,6 +1201,25 @@ export const PagosPage = () => {
                     
                     // Para pagos vencidos
                     if (pago.estado === 'vencido') {
+                      // Si ya envió comprobante, está en validación: no permitir enviar otro
+                      if (yaEnvioComprobante) {
+                        return (
+                          <>
+                            <button 
+                              onClick={() => {
+                                setPagoSeleccionado(pago);
+                                setShowDetallesModal(true);
+                              }}
+                              className="px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors font-medium text-sm"
+                            >
+                              Ver Detalles
+                            </button>
+                            <div className="px-4 py-2 bg-yellow-100 text-yellow-800 rounded-lg text-sm font-medium text-center">
+                              ⏳ Esperando validación
+                            </div>
+                          </>
+                        );
+                      }
                       return (
                         <button 
                           onClick={() => handleAbrirModalPago(pago)}
@@ -1108,21 +1328,96 @@ export const PagosPage = () => {
                   />
                 </div>
 
+                {/* Opción: Usar mi abono disponible (solo para cuotas admin o Restante) */}
+                {pagoSeleccionado && (pagoSeleccionado.creado_por_admin || (pagoSeleccionado.concepto || '').includes('Restante')) && abonoDisponible > 0 && (() => {
+                  const restantePago = pagoSeleccionado.monto - (pagoSeleccionado.abono ?? pagoSeleccionado.monto_pagado ?? 0);
+                  if (restantePago <= 0) return null;
+                  const abonoAUsar = Math.min(abonoDisponible, restantePago);
+                  const montoConComprobante = Math.max(0, restantePago - abonoAUsar);
+                  return (
+                    <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                      <label className="flex items-start gap-3 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={usarAbonoEnPago}
+                          onChange={(e) => {
+                            const checked = e.target.checked;
+                            setUsarAbonoEnPago(checked);
+                            setFormPago(prev => ({
+                              ...prev,
+                              monto: checked ? montoConComprobante.toFixed(2) : restantePago.toFixed(2),
+                            }));
+                          }}
+                          className="mt-1 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                        />
+                        <span className="text-sm font-medium text-blue-900">
+                          Usar mi abono disponible ({formatMonto(abonoDisponible)}) como parte del pago
+                        </span>
+                      </label>
+                      {usarAbonoEnPago && (
+                        <p className="text-xs text-blue-800 mt-2">
+                          Se aplicarán {formatMonto(abonoAUsar)} de tu abono. Monto a pagar con comprobante: {formatMonto(montoConComprobante)}.
+                        </p>
+                      )}
+                    </div>
+                  );
+                })()}
+
                 {/* Monto */}
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Monto *
+                    Monto a Pagar con comprobante *
                   </label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    min="0.01"
-                    value={formPago.monto}
-                    onChange={(e) => setFormPago({ ...formPago, monto: e.target.value })}
-                    className="w-full bg-white text-gray-900 border border-gray-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                    placeholder="0.00"
-                    required
-                  />
+                  {pagoSeleccionado && pagoSeleccionado.creado_por_admin ? (() => {
+                    const montoPagado = pagoSeleccionado.abono !== undefined && pagoSeleccionado.abono !== null 
+                      ? pagoSeleccionado.abono 
+                      : (pagoSeleccionado.monto_pagado || 0);
+                    const montoTotal = pagoSeleccionado.monto;
+                    const montoRestante = montoTotal - montoPagado;
+                    const montoMaximo = montoRestante;
+                    const montoIngresado = parseFloat(formPago.monto || '0');
+                    const excedente = montoIngresado > montoMaximo ? montoIngresado - montoMaximo : 0;
+                    
+                    return (
+                      <>
+                        <input
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          value={formPago.monto}
+                          onChange={(e) => setFormPago({ ...formPago, monto: e.target.value })}
+                          className={`w-full bg-white text-gray-900 border rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${
+                            excedente > 0 ? 'border-orange-400' : 'border-gray-300'
+                          }`}
+                          placeholder={montoMaximo.toFixed(2)}
+                          required
+                        />
+                        <p className="text-xs text-gray-500 mt-1">
+                          Máximo permitido: {formatMonto(montoMaximo)} (restante de la cuota){usarAbonoEnPago ? '. Con abono aplicado, este es el monto que pagas con comprobante.' : ''}
+                        </p>
+                        {excedente > 0 && (
+                          <div className="mt-2 bg-orange-50 border border-orange-200 rounded-lg p-2">
+                            <p className="text-xs text-orange-800">
+                              <strong>⚠️ Excedente detectado:</strong> El monto ingresado ({formatMonto(montoIngresado)}) excede el restante de la cuota ({formatMonto(montoMaximo)}).
+                              <br />
+                              <strong>El excedente de {formatMonto(excedente)} se guardará como abono</strong> y se aplicará automáticamente a tus próximas cuotas pendientes.
+                            </p>
+                          </div>
+                        )}
+                      </>
+                    );
+                  })() : (
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0.01"
+                      value={formPago.monto}
+                      onChange={(e) => setFormPago({ ...formPago, monto: e.target.value })}
+                      className="w-full bg-white text-gray-900 border border-gray-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                      placeholder="0.00"
+                      required
+                    />
+                  )}
                 </div>
 
                 {/* Referencia */}
@@ -1214,7 +1509,7 @@ export const PagosPage = () => {
                     !formPago.numero_casa || 
                     !formPago.concepto || 
                     !formPago.monto || 
-                    parseFloat(formPago.monto) <= 0 ||
+                    (parseFloat(formPago.monto) < 0 || (parseFloat(formPago.monto) <= 0 && !usarAbonoEnPago)) ||
                     !formPago.referencia || 
                     !formPago.metodo_pago ||
                     !formPago.descripcion || 

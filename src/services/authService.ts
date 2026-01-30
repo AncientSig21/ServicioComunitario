@@ -519,7 +519,7 @@ export const authService = {
         escuela: usuario.escuela || null,
         numeroApartamento: usuario.numeroApartamento || undefined,
         rol: usuario.rol || 'Usuario',
-        estado: usuario.estado || 'Activo'
+        estado: usuario.Estado ?? usuario.estado ?? 'Activo'
       };
       
       console.log('✅ Usuario autenticado desde localStorage:', userData);
@@ -534,11 +534,10 @@ export const authService = {
       }
       
       // Buscar usuario por correo Y contraseña en una sola consulta
-      // Usar solo las columnas que existen realmente en la BD según los tipos de Supabase
-      // Columnas disponibles: id, nombre, correo, rol, contraseña, cedula, telefono, condominio_id, auth_uid, created_at, updated_at
+      // Incluir estado (Activo/Moroso) para bloquear morosos hasta que envíen comprobante
       const { data: usuario, error: errorUsuario } = await supabase
         .from('usuarios')
-        .select('id, nombre, correo, rol')
+        .select('id, nombre, correo, rol, Estado')
         .eq('correo', loginData.correo.trim())
         .eq('contraseña', loginData.contraseña)
         .maybeSingle();
@@ -558,15 +557,14 @@ export const authService = {
         return { data: null, error: { message: 'Tu cuenta está pendiente de aprobación por un administrador. Te notificaremos cuando sea aprobada.' } };
       }
 
-      // Construir objeto User correctamente (solo campos que existen en la BD)
-      // Nota: La columna 'estado' NO existe en la BD real según los tipos de Supabase
+      // Construir objeto User correctamente; estado (Activo/Moroso) viene de la BD
       const userResponse: User = {
         id: usuario.id,
         nombre: usuario.nombre,
         correo: usuario.correo,
-        escuela: null, // La columna escuela no existe en la base de datos
+        escuela: null,
         rol: usuario.rol || 'Usuario',
-        estado: 'Activo' // Valor por defecto ya que la columna estado no existe en la BD
+        estado: usuario.Estado ?? 'Activo'
       };
 
       return { data: userResponse, error: null };

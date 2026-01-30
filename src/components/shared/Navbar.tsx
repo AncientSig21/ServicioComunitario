@@ -280,7 +280,7 @@ export const Navbar = () => {
 											<p className='font-semibold text-gray-700 text-sm'>Rol: <span className='font-normal text-gray-900 capitalize'>{user.rol}</span></p>
 										)}
 										{user.estado && (
-											<p className='font-semibold text-gray-700 text-sm'>Estado: <span className={`font-normal ${user.estado === 'Moroso' ? 'text-red-600' : 'text-green-600'}`}>{user.estado}</span></p>
+											<p className='font-semibold text-gray-700 text-sm'>Estado: <span className={`font-normal ${(user.Estado ?? user.estado) === 'Moroso' ? 'text-red-600' : 'text-green-600'}`}>{user.Estado ?? user.estado}</span></p>
 										)}
 									</div>
 									<button

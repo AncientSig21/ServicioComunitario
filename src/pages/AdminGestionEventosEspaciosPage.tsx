@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
 import { useAuth } from '../hooks/useAuth';
-import { fetchEspaciosComunes, eliminarEspacioComun, actualizarEspacioComun } from '../services/bookService';
-import { FaEdit, FaTrash, FaCalendarAlt, FaBuilding, FaSearch, FaFilter } from 'react-icons/fa';
+import { fetchEspaciosComunes, eliminarEspacioComun, actualizarEspacioComun, fetchSolicitudesMantenimiento, actualizarSolicitudMantenimiento } from '../services/bookService';
+import { FaEdit, FaTrash, FaCalendarAlt, FaBuilding, FaSearch, FaFilter, FaWrench, FaImages } from 'react-icons/fa';
 import { motion, AnimatePresence } from 'framer-motion';
+import { ProgressModal } from '../components/maintenance/ProgressModal';
 
 const MOCK_DB_KEY = 'mockDatabase_condominio';
 
@@ -33,9 +34,21 @@ interface EspacioComun {
   updated_at?: string | null;
 }
 
+export interface SolicitudMantenimientoAdmin {
+  id: number;
+  titulo: string;
+  descripcion: string | null;
+  estado: string | null;
+  prioridad: string | null;
+  ubicacion: string | null;
+  observaciones: string | null;
+  fecha_solicitud: string | null;
+  usuarios?: { nombre?: string; correo?: string } | null;
+}
+
 export const AdminGestionEventosEspaciosPage = () => {
   const { user } = useAuth();
-  const [activeTab, setActiveTab] = useState<'eventos' | 'espacios'>('eventos');
+  const [activeTab, setActiveTab] = useState<'eventos' | 'espacios' | 'mantenimiento'>('eventos');
   
   // Estados para eventos
   const [eventos, setEventos] = useState<Evento[]>([]);
@@ -53,6 +66,8 @@ export const AdminGestionEventosEspaciosPage = () => {
   const [filtroEstadoEspacios, setFiltroEstadoEspacios] = useState<string>('todos');
   const [showEditEspacioModal, setShowEditEspacioModal] = useState(false);
   const [espacioEditando, setEspacioEditando] = useState<EspacioComun | null>(null);
+  const [quitarImagenEspacio, setQuitarImagenEspacio] = useState(false);
+  const [eliminandoImagenEspacioId, setEliminandoImagenEspacioId] = useState<number | null>(null);
   const [formEspacio, setFormEspacio] = useState({
     nombre: '',
     descripcion: '',
@@ -60,6 +75,24 @@ export const AdminGestionEventosEspaciosPage = () => {
     horarios: '',
     equipamiento: '',
   });
+
+  // Estados para Mantenimiento (solicitudes de mantenimiento de la comunidad)
+  const [solicitudes, setSolicitudes] = useState<SolicitudMantenimientoAdmin[]>([]);
+  const [solicitudesLoading, setSolicitudesLoading] = useState(false);
+  const [searchMantenimiento, setSearchMantenimiento] = useState('');
+  const [filtroEstadoMantenimiento, setFiltroEstadoMantenimiento] = useState<string>('todos');
+  const [showEditMantenimientoModal, setShowEditMantenimientoModal] = useState(false);
+  const [solicitudEditando, setSolicitudEditando] = useState<SolicitudMantenimientoAdmin | null>(null);
+  const [formMantenimiento, setFormMantenimiento] = useState({
+    titulo: '',
+    descripcion: '',
+    ubicacion: '',
+    prioridad: 'media' as string,
+    observaciones: '',
+  });
+  const [showAvancesModal, setShowAvancesModal] = useState(false);
+  const [solicitudAvancesId, setSolicitudAvancesId] = useState<number | null>(null);
+  const [solicitudAvancesTitulo, setSolicitudAvancesTitulo] = useState('');
 
   // Cargar eventos desde localStorage
   const cargarEventos = () => {
@@ -99,15 +132,45 @@ export const AdminGestionEventosEspaciosPage = () => {
     }
   };
 
+  // Cargar solicitudes de mantenimiento desde Supabase
+  const cargarSolicitudesMantenimiento = async () => {
+    try {
+      setSolicitudesLoading(true);
+      const filters = filtroEstadoMantenimiento !== 'todos'
+        ? { estado: filtroEstadoMantenimiento as 'pendiente' | 'aprobado' | 'rechazado' | 'completado' }
+        : undefined;
+      const data = await fetchSolicitudesMantenimiento(filters);
+      const list: SolicitudMantenimientoAdmin[] = (data || []).map((s: any) => ({
+        id: s.id,
+        titulo: s.titulo || '',
+        descripcion: s.descripcion ?? null,
+        estado: s.estado ?? null,
+        prioridad: s.prioridad ?? null,
+        ubicacion: s.ubicacion ?? null,
+        observaciones: s.observaciones ?? null,
+        fecha_solicitud: s.fecha_solicitud ?? null,
+        usuarios: s.usuarios ?? null,
+      }));
+      setSolicitudes(list);
+    } catch (error: any) {
+      console.error('Error cargando solicitudes de mantenimiento:', error);
+      setSolicitudes([]);
+    } finally {
+      setSolicitudesLoading(false);
+    }
+  };
+
   useEffect(() => {
     if (user?.id) {
       if (activeTab === 'eventos') {
         cargarEventos();
-      } else {
+      } else if (activeTab === 'espacios') {
         cargarEspacios();
+      } else if (activeTab === 'mantenimiento') {
+        cargarSolicitudesMantenimiento();
       }
     }
-  }, [user, activeTab]);
+  }, [user, activeTab, filtroEstadoMantenimiento]);
 
   // Filtrar eventos
   const eventosFiltrados = eventos.filter(evento => {
@@ -119,6 +182,15 @@ export const AdminGestionEventosEspaciosPage = () => {
       evento.estado === filtroEstadoEventos;
     
     return matchSearch && matchEstado;
+  });
+
+  // Filtrar solicitudes de mantenimiento
+  const solicitudesFiltradas = solicitudes.filter(sol => {
+    const matchSearch = searchMantenimiento === '' ||
+      (sol.titulo && sol.titulo.toLowerCase().includes(searchMantenimiento.toLowerCase())) ||
+      (sol.descripcion && sol.descripcion.toLowerCase().includes(searchMantenimiento.toLowerCase())) ||
+      (sol.ubicacion && sol.ubicacion.toLowerCase().includes(searchMantenimiento.toLowerCase()));
+    return matchSearch;
   });
 
   // Filtrar espacios
@@ -233,16 +305,31 @@ export const AdminGestionEventosEspaciosPage = () => {
 
   const handleEditarEspacio = (espacio: EspacioComun) => {
     setEspacioEditando(espacio);
+    setQuitarImagenEspacio(false);
     setFormEspacio({
       nombre: espacio.nombre,
       descripcion: espacio.descripcion || '',
       capacidad: espacio.capacidad?.toString() || '',
       horarios: espacio.horarios || '',
-      equipamiento: Array.isArray(espacio.equipamiento) 
-        ? espacio.equipamiento.join(', ') 
+      equipamiento: Array.isArray(espacio.equipamiento)
+        ? espacio.equipamiento.join(', ')
         : espacio.equipamiento || '',
     });
     setShowEditEspacioModal(true);
+  };
+
+  const handleEliminarImagenEspacio = async (espacio: EspacioComun) => {
+    if (!user?.id || !espacio.imagen_url) return;
+    if (!window.confirm(`¿Quitar la imagen del espacio "${espacio.nombre}"?`)) return;
+    try {
+      setEliminandoImagenEspacioId(espacio.id);
+      await actualizarEspacioComun(espacio.id, user.id, { imagen_url: null });
+      await cargarEspacios();
+    } catch (error: any) {
+      alert(error.message || 'Error al eliminar la imagen');
+    } finally {
+      setEliminandoImagenEspacioId(null);
+    }
   };
 
   const handleGuardarEspacio = async () => {
@@ -266,11 +353,14 @@ export const AdminGestionEventosEspaciosPage = () => {
         capacidad: formEspacio.capacidad ? parseInt(formEspacio.capacidad) : null,
         horarios: formEspacio.horarios.trim() || null,
         equipamiento: equipamientoArray.length > 0 ? equipamientoArray : null,
+        ...(quitarImagenEspacio ? { imagen_url: null } : {}),
       });
+      if (quitarImagenEspacio) setQuitarImagenEspacio(false);
 
       alert('✅ Espacio común actualizado exitosamente');
       setShowEditEspacioModal(false);
       setEspacioEditando(null);
+      setQuitarImagenEspacio(false);
       await cargarEspacios();
     } catch (error: any) {
       console.error('Error actualizando espacio:', error);
@@ -300,6 +390,51 @@ export const AdminGestionEventosEspaciosPage = () => {
     } finally {
       setEspaciosLoading(false);
     }
+  };
+
+  // ==================== FUNCIONES DE MANTENIMIENTO ====================
+
+  const handleEditarMantenimiento = (sol: SolicitudMantenimientoAdmin) => {
+    setSolicitudEditando(sol);
+    setFormMantenimiento({
+      titulo: sol.titulo || '',
+      descripcion: sol.descripcion || '',
+      ubicacion: sol.ubicacion || '',
+      prioridad: (sol.prioridad as string) || 'media',
+      observaciones: sol.observaciones || '',
+    });
+    setShowEditMantenimientoModal(true);
+  };
+
+  const handleGuardarMantenimiento = async () => {
+    if (!solicitudEditando) return;
+    if (!formMantenimiento.titulo.trim()) {
+      alert('El título es obligatorio');
+      return;
+    }
+    try {
+      await actualizarSolicitudMantenimiento({
+        solicitud_id: solicitudEditando.id,
+        titulo: formMantenimiento.titulo.trim(),
+        descripcion: formMantenimiento.descripcion.trim() || undefined,
+        ubicacion: formMantenimiento.ubicacion.trim() || null,
+        prioridad: formMantenimiento.prioridad as 'baja' | 'media' | 'alta' | 'urgente',
+        observaciones: formMantenimiento.observaciones.trim() || null,
+      });
+      alert('✅ Solicitud actualizada. Los cambios se verán en Solicitudes de mantenimiento y servicios.');
+      setShowEditMantenimientoModal(false);
+      setSolicitudEditando(null);
+      cargarSolicitudesMantenimiento();
+    } catch (error: any) {
+      console.error('Error actualizando solicitud:', error);
+      alert(error.message || 'Error al guardar');
+    }
+  };
+
+  const handleVerAvances = (sol: SolicitudMantenimientoAdmin) => {
+    setSolicitudAvancesId(sol.id);
+    setSolicitudAvancesTitulo(sol.titulo || '');
+    setShowAvancesModal(true);
   };
 
   return (
@@ -342,6 +477,17 @@ export const AdminGestionEventosEspaciosPage = () => {
             >
               <FaBuilding className="inline mr-2" />
               Espacios Comunes ({espacios.length})
+            </button>
+            <button
+              onClick={() => setActiveTab('mantenimiento')}
+              className={`px-6 py-3 font-semibold transition-colors ${
+                activeTab === 'mantenimiento'
+                  ? 'text-indigo-600 border-b-2 border-indigo-600'
+                  : 'text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              <FaWrench className="inline mr-2" />
+              Mantenimiento ({solicitudes.length})
             </button>
           </div>
         </div>
@@ -452,6 +598,9 @@ export const AdminGestionEventosEspaciosPage = () => {
             animate={{ opacity: 1 }}
             className="bg-white rounded-lg shadow-xl p-6"
           >
+            <p className="text-gray-600 mb-6">
+              Administra los espacios comunes. Puedes editar cada espacio y, si tiene imagen, eliminarla con el botón de eliminar imagen (icono de papelera en color ámbar).
+            </p>
             {/* Filtros y búsqueda */}
             <div className="mb-6 flex flex-col md:flex-row gap-4">
               <div className="flex-1 relative">
@@ -502,7 +651,22 @@ export const AdminGestionEventosEspaciosPage = () => {
                       <h3 className="text-lg font-semibold text-gray-800 flex-1">
                         {espacio.nombre}
                       </h3>
-                      <div className="flex gap-2">
+                      <div className="flex gap-2 flex-wrap">
+                        {espacio.imagen_url && (
+                          <button
+                            onClick={() => handleEliminarImagenEspacio(espacio)}
+                            disabled={eliminandoImagenEspacioId === espacio.id}
+                            className="p-2 text-amber-600 hover:bg-amber-50 rounded-lg transition-colors disabled:opacity-50"
+                            title="Eliminar imagen del espacio"
+                          >
+                            {eliminandoImagenEspacioId === espacio.id ? (
+                              <span className="animate-spin inline-block w-5 h-5 border-2 border-amber-500 border-t-transparent rounded-full" />
+                            ) : (
+                              <FaTrash className="w-4 h-4" />
+                            )}
+                            <span className="sr-only">Eliminar imagen</span>
+                          </button>
+                        )}
                         <button
                           onClick={() => handleEditarEspacio(espacio)}
                           className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
@@ -519,6 +683,15 @@ export const AdminGestionEventosEspaciosPage = () => {
                         </button>
                       </div>
                     </div>
+                    {espacio.imagen_url && (
+                      <div className="mb-2 rounded-lg overflow-hidden border border-gray-200">
+                        <img
+                          src={espacio.imagen_url}
+                          alt={espacio.nombre}
+                          className="w-full h-32 object-cover"
+                        />
+                      </div>
+                    )}
                     {espacio.descripcion && (
                       <p className="text-gray-600 text-sm mb-2 line-clamp-2">
                         {espacio.descripcion}
@@ -532,6 +705,113 @@ export const AdminGestionEventosEspaciosPage = () => {
                       }`}>
                         {espacio.activo ? 'Activo' : 'Pendiente'}
                       </span>
+                    </div>
+                  </motion.div>
+                ))}
+              </div>
+            )}
+          </motion.div>
+        )}
+
+        {/* Contenido de Mantenimiento */}
+        {activeTab === 'mantenimiento' && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            className="bg-white rounded-lg shadow-xl p-6"
+          >
+            <p className="text-gray-600 mb-6">
+              Gestiona los mantenimientos de la comunidad. Las ediciones y las imágenes de avances que agregues aquí se mostrarán en la sección <strong>Solicitudes de mantenimiento</strong> para los residentes. Desde <strong>Avances y fotos</strong> puedes agregar imágenes de progreso y eliminar las que ya no quieras.
+            </p>
+            <div className="mb-6 flex flex-col md:flex-row gap-4">
+              <div className="flex-1 relative">
+                <FaSearch className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
+                <input
+                  type="text"
+                  placeholder="Buscar por título, descripción o ubicación..."
+                  value={searchMantenimiento}
+                  onChange={(e) => setSearchMantenimiento(e.target.value)}
+                  className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <FaFilter className="text-gray-400" />
+                <select
+                  value={filtroEstadoMantenimiento}
+                  onChange={(e) => setFiltroEstadoMantenimiento(e.target.value)}
+                  className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
+                >
+                  <option value="todos">Todos los estados</option>
+                  <option value="pendiente">Pendientes</option>
+                  <option value="aprobado">Aprobados</option>
+                  <option value="completado">Completados</option>
+                  <option value="rechazado">Rechazados</option>
+                </select>
+              </div>
+            </div>
+
+            {solicitudesLoading ? (
+              <div className="text-center py-12">
+                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600 mx-auto"></div>
+                <p className="mt-4 text-gray-600">Cargando solicitudes de mantenimiento...</p>
+              </div>
+            ) : solicitudesFiltradas.length === 0 ? (
+              <div className="text-center py-12 text-gray-500">
+                No hay solicitudes de mantenimiento para mostrar
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {solicitudesFiltradas.map((sol) => (
+                  <motion.div
+                    key={sol.id}
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow"
+                  >
+                    <div className="flex justify-between items-start flex-wrap gap-2">
+                      <div className="flex-1 min-w-0">
+                        <h3 className="text-lg font-semibold text-gray-800 mb-1">{sol.titulo}</h3>
+                        {sol.descripcion && (
+                          <p className="text-gray-600 text-sm mb-2 line-clamp-2">{sol.descripcion}</p>
+                        )}
+                        <div className="flex flex-wrap gap-3 text-xs text-gray-500">
+                          {sol.fecha_solicitud && (
+                            <span>📅 {new Date(sol.fecha_solicitud).toLocaleDateString('es-ES')}</span>
+                          )}
+                          {sol.ubicacion && <span>📍 {sol.ubicacion}</span>}
+                          {sol.usuarios?.nombre && <span>👤 {sol.usuarios.nombre}</span>}
+                          <span className={`px-2 py-1 rounded ${
+                            sol.estado === 'completado' ? 'bg-green-100 text-green-800' :
+                            sol.estado === 'aprobado' ? 'bg-blue-100 text-blue-800' :
+                            sol.estado === 'rechazado' ? 'bg-red-100 text-red-800' :
+                            'bg-yellow-100 text-yellow-800'
+                          }`}>
+                            {sol.estado || 'pendiente'}
+                          </span>
+                          {sol.prioridad && (
+                            <span className="px-2 py-1 rounded bg-gray-100 text-gray-700">
+                              Prioridad: {sol.prioridad}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => handleEditarMantenimiento(sol)}
+                          className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                          title="Editar solicitud"
+                        >
+                          <FaEdit />
+                        </button>
+                        <button
+                          onClick={() => handleVerAvances(sol)}
+                          className="p-2 text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors flex items-center gap-1"
+                          title="Ver avances y fotos / Agregar imágenes de progreso"
+                        >
+                          <FaImages className="mr-1" />
+                          <span className="text-sm">Avances y fotos</span>
+                        </button>
+                      </div>
                     </div>
                   </motion.div>
                 ))}
@@ -682,12 +962,37 @@ export const AdminGestionEventosEspaciosPage = () => {
                       className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
                     />
                   </div>
+                  {espacioEditando.imagen_url && !quitarImagenEspacio && (
+                    <div className="rounded-lg border border-gray-200 p-3 bg-gray-50">
+                      <p className="text-sm font-medium text-gray-700 mb-2">Imagen actual del espacio</p>
+                      <img
+                        src={espacioEditando.imagen_url}
+                        alt={espacioEditando.nombre}
+                        className="w-full max-h-48 object-contain rounded-lg"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setQuitarImagenEspacio(true)}
+                        className="mt-2 inline-flex items-center gap-2 px-3 py-2 text-sm font-medium text-red-700 bg-red-50 border border-red-200 rounded-lg hover:bg-red-100 transition-colors"
+                        title="Quitar la imagen al guardar"
+                      >
+                        <FaTrash className="w-4 h-4" />
+                        Eliminar imagen
+                      </button>
+                    </div>
+                  )}
+                  {quitarImagenEspacio && (
+                    <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                      La imagen se quitará al guardar los cambios.
+                    </p>
+                  )}
                 </div>
                 <div className="flex justify-end gap-4 mt-6">
                   <button
                     onClick={() => {
                       setShowEditEspacioModal(false);
                       setEspacioEditando(null);
+                      setQuitarImagenEspacio(false);
                     }}
                     className="px-4 py-2 text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
                   >
@@ -705,6 +1010,111 @@ export const AdminGestionEventosEspaciosPage = () => {
             </div>
           )}
         </AnimatePresence>
+
+        {/* Modal de Edición de Solicitud de Mantenimiento */}
+        <AnimatePresence>
+          {showEditMantenimientoModal && solicitudEditando && (
+            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.95 }}
+                className="bg-white rounded-lg shadow-xl p-6 max-w-2xl w-full max-h-[90vh] overflow-y-auto"
+              >
+                <h2 className="text-2xl font-bold text-gray-800 mb-4">Editar Solicitud de Mantenimiento</h2>
+                <p className="text-sm text-gray-600 mb-4">
+                  Los cambios se reflejarán en la sección <strong>Solicitudes de mantenimiento y servicios</strong> para los residentes.
+                </p>
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Título *</label>
+                    <input
+                      type="text"
+                      value={formMantenimiento.titulo}
+                      onChange={(e) => setFormMantenimiento({ ...formMantenimiento, titulo: e.target.value })}
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Descripción</label>
+                    <textarea
+                      value={formMantenimiento.descripcion}
+                      onChange={(e) => setFormMantenimiento({ ...formMantenimiento, descripcion: e.target.value })}
+                      rows={4}
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Ubicación</label>
+                    <input
+                      type="text"
+                      value={formMantenimiento.ubicacion}
+                      onChange={(e) => setFormMantenimiento({ ...formMantenimiento, ubicacion: e.target.value })}
+                      placeholder="Ej: Área común, Ascensor, etc."
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Prioridad</label>
+                    <select
+                      value={formMantenimiento.prioridad}
+                      onChange={(e) => setFormMantenimiento({ ...formMantenimiento, prioridad: e.target.value })}
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
+                    >
+                      <option value="baja">Baja</option>
+                      <option value="media">Media</option>
+                      <option value="alta">Alta</option>
+                      <option value="urgente">Urgente</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Observaciones</label>
+                    <textarea
+                      value={formMantenimiento.observaciones}
+                      onChange={(e) => setFormMantenimiento({ ...formMantenimiento, observaciones: e.target.value })}
+                      rows={2}
+                      placeholder="Notas internas o para el residente"
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
+                    />
+                  </div>
+                </div>
+                <div className="flex justify-end gap-4 mt-6">
+                  <button
+                    onClick={() => {
+                      setShowEditMantenimientoModal(false);
+                      setSolicitudEditando(null);
+                    }}
+                    className="px-4 py-2 text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    onClick={handleGuardarMantenimiento}
+                    className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors"
+                  >
+                    Guardar Cambios
+                  </button>
+                </div>
+              </motion.div>
+            </div>
+          )}
+        </AnimatePresence>
+
+        {/* Modal de Avances (imágenes de progreso) - mismo componente que usa el residente */}
+        {solicitudAvancesId !== null && (
+          <ProgressModal
+            isOpen={showAvancesModal}
+            onClose={() => {
+              setShowAvancesModal(false);
+              setSolicitudAvancesId(null);
+              setSolicitudAvancesTitulo('');
+              cargarSolicitudesMantenimiento();
+            }}
+            solicitudId={solicitudAvancesId}
+            solicitudTitulo={solicitudAvancesTitulo}
+          />
+        )}
       </div>
     </div>
   );

@@ -19,7 +19,7 @@ export const HomePage = () => {
 	const { isAuthenticated, user } = useAuth();
 	const [showPaymentModal, setShowPaymentModal] = useState(false);
 	const [pagosPendientes, setPagosPendientes] = useState<PagoPendiente[]>([]);
-	const [loadingPagos, setLoadingPagos] = useState(false);
+	const [, setLoadingPagos] = useState(false);
 
 	useEffect(() => {
 		if (isAuthenticated && user?.id) {
@@ -27,16 +27,68 @@ export const HomePage = () => {
 		}
 	}, [isAuthenticated, user]);
 
+	// Recargar pagos pendientes cuando la página vuelve a estar visible
+	useEffect(() => {
+		const handleVisibilityChange = () => {
+			if (!document.hidden && isAuthenticated && user?.id) {
+				cargarPagosPendientes();
+			}
+		};
+
+		const handleFocus = () => {
+			if (isAuthenticated && user?.id) {
+				cargarPagosPendientes();
+			}
+		};
+
+		document.addEventListener('visibilitychange', handleVisibilityChange);
+		window.addEventListener('focus', handleFocus);
+
+		return () => {
+			document.removeEventListener('visibilitychange', handleVisibilityChange);
+			window.removeEventListener('focus', handleFocus);
+		};
+	}, [isAuthenticated, user]);
+
 	const cargarPagosPendientes = async () => {
 		if (!user?.id) return;
 		try {
 			setLoadingPagos(true);
-			const pagos = await fetchPagos({ usuario_id: user.id, estado: 'pendiente' });
-			// Filtrar pagos completados, cancelados y pagados para que no aparezcan
-			const pagosFiltrados = pagos.filter(pago => {
-				const estado = pago.estado?.toLowerCase();
-				return estado === 'pendiente' || estado === 'vencido' || estado === 'parcial';
-			});
+			// Obtener todos los pagos del usuario para filtrar correctamente
+			const pagos: any[] = await fetchPagos({ usuario_id: user.id });
+			
+			// Filtrar explícitamente para excluir pagos completados (pagado) y rechazados
+			// Solo mostrar pagos que están pendientes de revisión
+			const pagosFiltrados: PagoPendiente[] = pagos
+				.filter((pago: any) => {
+					const estado = (pago.estado || '').toLowerCase();
+					// Acceder a abono usando notación de corchetes ya que puede no estar en el tipo
+					const montoPagado = (pago.abono !== undefined && pago.abono !== null) 
+						? parseFloat(pago.abono.toString()) 
+						: ((pago.monto_pagado !== undefined && pago.monto_pagado !== null) ? parseFloat(pago.monto_pagado.toString()) : 0);
+					const montoTotal = parseFloat((pago.monto || 0).toString());
+					
+					// Excluir explícitamente pagos completados
+					if (estado === 'pagado' || (montoPagado >= montoTotal && montoTotal > 0)) {
+						return false;
+					}
+					
+					// Excluir pagos rechazados
+					if (estado === 'rechazado') {
+						return false;
+					}
+					
+					// Incluir solo pagos pendientes, vencidos o parciales
+					return estado === 'pendiente' || estado === 'vencido' || estado === 'parcial';
+				})
+				.map((pago: any): PagoPendiente => ({
+					id: pago.id,
+					concepto: pago.concepto || '',
+					monto: parseFloat((pago.monto || 0).toString()),
+					estado: pago.estado || 'pendiente',
+					created_at: pago.created_at || new Date().toISOString(),
+				}));
+			
 			setPagosPendientes(pagosFiltrados.slice(0, 3)); // Mostrar máximo 3 pagos pendientes
 		} catch (error) {
 			console.error('Error cargando pagos pendientes:', error);

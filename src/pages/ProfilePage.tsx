@@ -232,10 +232,10 @@ export const ProfilePage = () => {
                   </label>
                   <input
                     type="text"
-                    value={user.estado}
+                    value={user.Estado ?? user.estado}
                     disabled
                     className={`w-full px-4 py-2 border rounded-lg bg-gray-100 cursor-not-allowed ${
-                      user.estado === 'Moroso' ? 'text-red-600' : 'text-green-600'
+                      (user.Estado ?? user.estado) === 'Moroso' ? 'text-red-600' : 'text-green-600'
                     }`}
                   />
                 </div>

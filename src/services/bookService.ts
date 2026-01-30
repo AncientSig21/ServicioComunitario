@@ -39,6 +39,16 @@ const getCurrentLocalISOString = (): string => {
   return new Date().toISOString();
 };
 
+/** Parsea el monto de excedente (abono a favor) desde observaciones. Ej: "Excedente (abono para otras cuotas): 150,00" o "Bs. 150,00" */
+export const parsearExcedenteDeObservaciones = (observaciones: string | null | undefined): number => {
+  if (!observaciones || typeof observaciones !== 'string') return 0;
+  const match = observaciones.match(/Excedente\s*\(abono para otras cuotas\)\s*:\s*(?:Bs\.?\s*)?([\d.,]+)/i);
+  if (!match || !match[1]) return 0;
+  const numStr = match[1].replace(',', '.');
+  const n = parseFloat(numStr);
+  return Number.isFinite(n) && n >= 0 ? n : 0;
+};
+
 // ==================== TIPOS ACTUALIZADOS SEGÚN SUPABASE.TS ====================
 
 export interface Usuario {
@@ -84,6 +94,7 @@ export interface Pago {
   id: number;
   usuario_id: number | null;
   vivienda_id: number | null;
+  condominio_id: number | null; // Condominio al que pertenece el usuario donde se creó el pago
   concepto: string;
   monto: number;
   tipo: TipoPagoEnum | null;
@@ -221,7 +232,7 @@ export const actualizarEstadoUsuario = async ({
       throw new Error('Solo los administradores pueden actualizar el estado de los usuarios');
     }
 
-    // Actualizar el estado del usuario
+    // Actualizar el estado del usuario (columna en BD: Estado, con mayúscula)
     const { data: usuarioActualizado, error: updateError } = await supabase
       .from('usuarios')
       .update({ 
@@ -333,10 +344,14 @@ export const registerResidente = async (userData: {
 export const fetchPagos = async (filters?: {
   usuario_id?: number;
   vivienda_id?: number;
+  condominio_id?: number;
   estado?: EstadoEnum;
   tipo?: TipoPagoEnum;
 }) => {
   try {
+    // Condominio se obtiene vía usuarios.condominios; no usar condominios(*) directo
+    // para evitar error "Could not find a relationship between 'pagos' and 'condominios'"
+    // si la FK pagos.condominio_id no está en la caché del schema de Supabase
     let query = supabase
       .from('pagos')
       .select(`
@@ -355,6 +370,7 @@ export const fetchPagos = async (filters?: {
 
     if (filters?.usuario_id) query = query.eq('usuario_id', filters.usuario_id);
     if (filters?.vivienda_id) query = query.eq('vivienda_id', filters.vivienda_id);
+    if (filters?.condominio_id != null) query = query.eq('condominio_id', filters.condominio_id);
     if (filters?.estado) query = query.eq('estado', filters.estado);
     if (filters?.tipo) query = query.eq('tipo', filters.tipo);
 
@@ -389,6 +405,27 @@ export const fetchPagos = async (filters?: {
     // Retornar array vacío en lugar de lanzar error para evitar que la UI se rompa
     // El componente manejará el error mostrándolo al usuario
     throw error;
+  }
+};
+
+/** Obtiene un pago por ID (datos actuales de la BD, incl. abono). Útil al validar para no usar datos obsoletos. */
+export const fetchPagoById = async (pago_id: number) => {
+  try {
+    const { data, error } = await supabase
+      .from('pagos')
+      .select(`
+        *,
+        usuarios(*),
+        viviendas(*),
+        archivos!pagos_comprobante_archivo_id_fkey(*)
+      `)
+      .eq('id', pago_id)
+      .single();
+    if (error) return null;
+    return data;
+  } catch (e) {
+    console.warn('fetchPagoById:', e);
+    return null;
   }
 };
 
@@ -453,13 +490,25 @@ export const solicitarPago = async ({
     // Mapear tipo de pago antiguo a nuevo si es necesario
     const tipoMapeado = typeof tipo === 'string' ? mapearTipoPago(tipo) : tipo;
 
+    // Obtener condominio_id del usuario (referencia al condominio donde se crea el pago)
+    let condominio_id: number | null = null;
+    const { data: usuarioData } = await supabase
+      .from('usuarios')
+      .select('condominio_id')
+      .eq('id', usuario_id)
+      .single();
+    if (usuarioData?.condominio_id != null) {
+      condominio_id = usuarioData.condominio_id;
+    }
+
     // 3. Crear el pago
     // Nota: El schema de la BD incluye estos campos en la tabla pagos:
-    // id, usuario_id, vivienda_id, concepto, monto, tipo, estado, fecha_vencimiento, fecha_pago,
+    // id, usuario_id, vivienda_id, condominio_id, concepto, monto, tipo, estado, fecha_vencimiento, fecha_pago,
     // referencia, metodo_pago, comprobante_archivo_id, observaciones, abono, created_at, updated_at
     const pagoObj: any = {
       usuario_id,
       vivienda_id: vivienda_id || null, // El schema incluye vivienda_id
+      condominio_id, // Condominio al que pertenece el usuario donde se creó el pago
       concepto,
       monto,
       tipo: tipoMapeado,
@@ -484,11 +533,13 @@ export const solicitarPago = async ({
         usuarios(*)
       `);
     
-    // Si hay error, puede ser por campos que no existen, intentar sin campos opcionales
+    // Si hay error, puede ser por columnas que no existen en tu BD, intentar con menos campos
     if (error) {
       console.warn('Error creando pago con campos completos, intentando sin campos opcionales:', error);
       const pagoObjBasico: any = {
         usuario_id,
+        vivienda_id: vivienda_id || null,
+        condominio_id,
         concepto,
         monto,
         tipo: tipoMapeado,
@@ -498,22 +549,43 @@ export const solicitarPago = async ({
         created_at: getCurrentLocalISOString(),
         updated_at: getCurrentLocalISOString()
       };
-      
-      const { data: data2, error: error2 } = await supabase
+
+      let { data: data2, error: error2 } = await supabase
         .from('pagos')
         .insert([pagoObjBasico])
-        .select(`
-          *,
-          usuarios(*)
-        `);
-      
+        .select(`*, usuarios(*)`);
+
       if (error2) {
-        console.error('Error creando pago:', error2);
-        throw new Error('Error al crear la solicitud de pago');
+        console.warn('Error con pagoObjBasico, intentando solo campos mínimos:', error2);
+        // Último intento: solo columnas que suelen existir en cualquier tabla pagos
+        const pagoMinimo: any = {
+          usuario_id,
+          vivienda_id: vivienda_id || null,
+          concepto,
+          monto,
+          tipo: tipoMapeado,
+          estado: 'pendiente',
+          fecha_vencimiento: fecha_vencimiento || null,
+          observaciones: observaciones || null,
+          created_at: getCurrentLocalISOString(),
+          updated_at: getCurrentLocalISOString()
+        };
+        const res = await supabase.from('pagos').insert([pagoMinimo]).select(`*, usuarios(*)`);
+        error2 = res.error;
+        data2 = res.data;
       }
-      
+
+      if (error2) {
+        const msg = (error2 as any)?.message || error2?.message || String(error2);
+        const details = (error2 as any)?.details || '';
+        console.error('Error creando pago:', error2);
+        throw new Error(`Error al crear la solicitud de pago. ${msg} ${details}`.trim());
+      }
+
       data = data2;
     }
+    
+    // El abono disponible ya no se aplica automáticamente: el usuario elige usarlo al enviar comprobante.
     
     // Asociar el archivo del comprobante con el pago mediante la tabla archivos
     if (archivo_comprobante_id && data && data[0]) {
@@ -587,12 +659,16 @@ export const validarPago = async ({
     
     // Solo calcular abono si no se está rechazando el pago
     if (nuevo_estado !== 'rechazado') {
-      // Usar 'abono' que es el campo real en la BD
+      // Usar 'abono' que es el campo real en la BD (ya puede incluir lo que el usuario envió con el comprobante)
       nuevo_abono = parseFloat((pago.abono || 0).toString());
       if (monto_aprobado !== undefined && monto_aprobado > 0) {
         nuevo_abono += monto_aprobado;
-      } else if (nuevo_estado === 'pagado') {
-        // Si se aprueba completamente sin monto_aprobado, usar el monto total
+      } else if (nuevo_estado === 'pagado' && nuevo_abono < monto_total && monto_total > 0) {
+        // Solo completar al monto total si el admin aprueba sin monto y faltaba algo
+        nuevo_abono = monto_total;
+      }
+      // Nunca superar el monto total de la cuota
+      if (monto_total > 0 && nuevo_abono > monto_total) {
         nuevo_abono = monto_total;
       }
 
@@ -638,6 +714,44 @@ export const validarPago = async ({
       .eq('id', pago_id);
 
     if (updateError) throw updateError;
+
+    // 4a. Si este pago es un "Restante" (pago parcial del usuario), actualizar el pago padre
+    const parentPagoId = parsearPagoIdRestante(pago.observaciones);
+    if (estado_final === 'pagado' && parentPagoId != null) {
+      try {
+        const { data: parentPago, error: parentErr } = await supabase
+          .from('pagos')
+          .select('id, monto, abono, estado')
+          .eq('id', parentPagoId)
+          .single();
+        if (!parentErr && parentPago) {
+          const montoParent = parseFloat((parentPago.monto || 0).toString());
+          const abonoParent = parseFloat((parentPago.abono || 0).toString());
+          const montoRestanteAprobado = parseFloat((pago.monto || 0).toString());
+          const nuevoAbonoParent = abonoParent + montoRestanteAprobado;
+          const parentUpdate: any = {
+            abono: nuevoAbonoParent,
+            updated_at: getCurrentLocalISOString()
+          };
+          if (nuevoAbonoParent >= montoParent && montoParent > 0) {
+            parentUpdate.estado = 'pagado' as EstadoEnum;
+            parentUpdate.fecha_pago = getCurrentLocalISOString();
+          }
+          await supabase.from('pagos').update(parentUpdate).eq('id', parentPagoId);
+        }
+      } catch (parentErr) {
+        console.warn('Error actualizando pago padre (Restante):', parentErr);
+      }
+    }
+
+    // 4b. Si se aprobó como pagado y había excedente, aplicar abonos a pagos pendientes (siguiente cuota, etc.)
+    if (estado_final === 'pagado' && pago.usuario_id) {
+      try {
+        await aplicarAbonosAPagosPendientes(pago.usuario_id);
+      } catch (abonoErr) {
+        console.warn('Error aplicando abonos a pagos pendientes (no crítico):', abonoErr);
+      }
+    }
 
     // 5. Registrar en historial
     await supabase
@@ -691,6 +805,34 @@ export const validarPago = async ({
       }
     }
 
+    // 7. Si el pago quedó pagado, re-evaluar estado moroso del usuario: si ya no tiene pagos vencidos, poner Activo
+    if (estado_final === 'pagado' && pago.usuario_id) {
+      try {
+        const { data: pagosVencidosRestantes } = await supabase
+          .from('pagos')
+          .select('id')
+          .eq('usuario_id', pago.usuario_id)
+          .eq('estado', 'vencido')
+          .limit(1);
+        if (!pagosVencidosRestantes || pagosVencidosRestantes.length === 0) {
+          const { error: updateUserError } = await supabase
+            .from('usuarios')
+            .update({
+              Estado: 'Activo',
+              updated_at: getCurrentLocalISOString()
+            })
+            .eq('id', pago.usuario_id);
+          if (updateUserError) {
+            console.warn('Error actualizando estado del usuario a Activo:', updateUserError);
+          } else {
+            console.log(`Usuario ${pago.usuario_id} actualizado a Activo (sin pagos vencidos).`);
+          }
+        }
+      } catch (err: any) {
+        console.warn('Error re-evaluando estado moroso del usuario (no crítico):', err);
+      }
+    }
+
       return { 
         success: true, 
         message: `Pago ${estado_final} exitosamente`,
@@ -701,6 +843,146 @@ export const validarPago = async ({
     console.error('Error en validarPago:', error);
     throw error;
   }
+};
+
+// Actualizar un pago existente (creado por admin) con los datos del usuario (referencia, comprobante, etc.)
+// No crea un pago nuevo: evita duplicados. El admin validará este mismo pago (pagado/rechazado).
+export const actualizarPagoConComprobante = async ({
+  pago_id,
+  usuario_id,
+  referencia,
+  metodo_pago,
+  comprobante_archivo_id,
+  observaciones,
+  abono
+}: {
+  pago_id: number;
+  usuario_id: number;
+  referencia?: string | null;
+  metodo_pago?: string | null;
+  comprobante_archivo_id?: number | null;
+  observaciones?: string | null;
+  abono?: number; // Monto abonado acumulado (ej. pago parcial)
+}) => {
+  try {
+    const { data: pago, error: pagoError } = await supabase
+      .from('pagos')
+      .select('*')
+      .eq('id', pago_id)
+      .eq('usuario_id', usuario_id)
+      .single();
+
+    if (pagoError || !pago) {
+      throw new Error('Pago no encontrado o no pertenece al usuario');
+    }
+
+    if (pago.estado !== 'pendiente') {
+      throw new Error('Solo se puede adjuntar comprobante a pagos pendientes');
+    }
+
+    const updateData: any = {
+      updated_at: getCurrentLocalISOString()
+    };
+    if (referencia !== undefined) updateData.referencia = referencia ?? null;
+    if (metodo_pago !== undefined) updateData.metodo_pago = metodo_pago ?? null;
+    if (comprobante_archivo_id !== undefined) updateData.comprobante_archivo_id = comprobante_archivo_id ?? null;
+    if (observaciones !== undefined) updateData.observaciones = observaciones ?? null;
+    if (abono !== undefined) updateData.abono = abono;
+
+    const { error: updateError } = await supabase
+      .from('pagos')
+      .update(updateData)
+      .eq('id', pago_id);
+
+    if (updateError) throw updateError;
+
+    if (comprobante_archivo_id) {
+      await supabase
+        .from('archivos')
+        .update({ entidad: 'pagos', entidad_id: pago_id })
+        .eq('id', comprobante_archivo_id);
+    }
+
+    await supabase
+      .from('historial_pagos')
+      .insert([{
+        pago_id,
+        evento: 'comprobante_adjuntado',
+        usuario_actor_id: usuario_id,
+        datos: { accion: 'usuario_adjunto_comprobante', referencia: referencia ?? null },
+        fecha_evento: getCurrentLocalISOString()
+      }]);
+
+    const { data: updated } = await supabase
+      .from('pagos')
+      .select('*, usuarios(*)')
+      .eq('id', pago_id)
+      .single();
+
+    return updated;
+  } catch (error) {
+    console.error('Error en actualizarPagoConComprobante:', error);
+    throw error;
+  }
+};
+
+/** Parsea pago_id del padre desde observaciones de un pago "Restante". Ej: "Restante de pago_id 123. ..." */
+export const parsearPagoIdRestante = (observaciones: string | null | undefined): number | null => {
+  if (!observaciones || typeof observaciones !== 'string') return null;
+  const match = observaciones.match(/Restante de pago_id\s*(\d+)/i);
+  if (!match || !match[1]) return null;
+  const n = parseInt(match[1], 10);
+  return Number.isFinite(n) ? n : null;
+};
+
+/**
+ * Crear un pago "Restante" cuando el usuario hace un pago parcial.
+ * Así aparece un ítem por el monto que falta para que el usuario envíe comprobante y se valide.
+ */
+export const crearPagoRestante = async ({
+  usuario_id,
+  vivienda_id,
+  parent_pago_id,
+  concepto_base,
+  monto_restante,
+  monto_total_original,
+  abono_ya_aplicado,
+  tipo,
+  fecha_vencimiento
+}: {
+  usuario_id: number;
+  vivienda_id: number;
+  parent_pago_id: number;
+  concepto_base: string;
+  monto_restante: number;
+  monto_total_original: number;
+  abono_ya_aplicado: number;
+  tipo: string;
+  fecha_vencimiento: string;
+}): Promise<unknown> => {
+  if (monto_restante <= 0) return null;
+  // Evitar duplicados: si ya existe un Restante para este pago padre, no crear otro
+  const { data: existente } = await supabase
+    .from('pagos')
+    .select('id')
+    .eq('usuario_id', usuario_id)
+    .like('concepto', '%Restante%')
+    .like('observaciones', `%Restante de pago_id ${parent_pago_id}%`)
+    .in('estado', ['pendiente', 'vencido'])
+    .limit(1);
+  if (existente && existente.length > 0) return existente[0];
+
+  const conceptoRestante = `${concepto_base} - Restante`;
+  const observaciones = `Restante de pago_id ${parent_pago_id}. Monto total original: ${monto_total_original.toFixed(2)} Bs, ya pagado/en validación: ${abono_ya_aplicado.toFixed(2)} Bs.`;
+  return solicitarPago({
+    usuario_id,
+    vivienda_id,
+    concepto: conceptoRestante,
+    monto: monto_restante,
+    tipo,
+    fecha_vencimiento,
+    observaciones
+  });
 };
 
 // Función para editar un pago pendiente
@@ -820,140 +1102,89 @@ export const crearPagosMasivos = async ({
     let usuariosObjetivo: number[] = [];
 
     if (aplicar_a_todos) {
-      // Obtener todos los usuarios activos (excepto admins)
-      // Primero intentar sin filtro de estado para ver qué usuarios hay
-      console.log('DEBUG - Obteniendo usuarios sin filtro primero para debug...');
-      const { data: debugTodos, error: debugError } = await supabase
-        .from('usuarios')
-        .select('id, nombre, rol, Estado')
-        .neq('rol', 'admin')
-        .limit(10);
-      
-      console.log('DEBUG - Usuarios sin filtro de estado:', debugTodos);
-      console.log('DEBUG - Error (si hay):', debugError);
-      
-      // Ahora intentar con filtro de Estado
-      const { data: todosUsuarios, error: usuariosError } = await supabase
+      // Obtener todos los usuarios (excepto admins). Intentar con estado=Activo; si falla, sin filtro estado
+      let dataTodos: { id: number }[] | null = null;
+      const { data: conEstado, error: errEstado } = await supabase
         .from('usuarios')
         .select('id')
         .neq('rol', 'admin')
         .eq('Estado', 'Activo');
-      
-      if (usuariosError) {
-        console.error('Error obteniendo usuarios con Estado=Activo:', usuariosError);
-        // Si hay error con Estado, intentar sin filtro de estado
-        console.log('Intentando sin filtro de Estado...');
-        const { data: todosUsuariosSinEstado, error: usuariosErrorSinEstado } = await supabase
+
+      if (!errEstado && conEstado?.length !== undefined) {
+        dataTodos = conEstado;
+      }
+      if (!dataTodos || dataTodos.length === 0) {
+        const { data: sinEstado, error: errSinEstado } = await supabase
           .from('usuarios')
           .select('id')
           .neq('rol', 'admin');
-        
-        if (usuariosErrorSinEstado) {
-          console.error('Error obteniendo usuarios sin filtro de estado:', usuariosErrorSinEstado);
-          throw usuariosErrorSinEstado;
+        if (errSinEstado) {
+          console.error('Error obteniendo usuarios:', errSinEstado);
+          throw new Error('No se pudieron cargar los usuarios. Verifique la conexión y la tabla usuarios.');
         }
-        
-        usuariosObjetivo = (todosUsuariosSinEstado || []).filter(u => u && u.id != null).map(u => Number(u.id));
-        console.log('Usuarios encontrados sin filtro de estado (aplicar_a_todos):', usuariosObjetivo.length);
-      } else {
-        console.log('DEBUG - todosUsuarios raw:', todosUsuarios);
-        console.log('DEBUG - todosUsuarios length:', todosUsuarios?.length);
-        
-        usuariosObjetivo = (todosUsuarios || []).filter(u => u && u.id != null).map(u => Number(u.id));
-        
-        console.log('Usuarios encontrados con Estado=Activo (aplicar_a_todos):', usuariosObjetivo.length);
-        console.log('DEBUG - usuariosObjetivo después del map:', usuariosObjetivo);
-        
-        // Si no se encontraron usuarios activos, obtener todos los no-admin (sin filtro de estado)
-        if (usuariosObjetivo.length === 0) {
-          console.log('No se encontraron usuarios con Estado=Activo, obteniendo todos los no-admin...');
-          const { data: todosUsuariosSinEstado, error: usuariosErrorSinEstado } = await supabase
-            .from('usuarios')
-            .select('id, nombre, rol, Estado')
-            .neq('rol', 'admin');
-          
-          if (usuariosErrorSinEstado) {
-            console.error('Error obteniendo usuarios sin filtro de estado:', usuariosErrorSinEstado);
-            throw usuariosErrorSinEstado;
-          }
-          
-          console.log('DEBUG - todosUsuariosSinEstado raw:', todosUsuariosSinEstado);
-          console.log('DEBUG - todosUsuariosSinEstado length:', todosUsuariosSinEstado?.length);
-          
-          usuariosObjetivo = (todosUsuariosSinEstado || []).filter(u => u && u.id != null).map(u => Number(u.id));
-          
-          console.log('Usuarios encontrados sin filtro de estado (aplicar_a_todos):', usuariosObjetivo.length);
-          console.log('DEBUG - usuariosObjetivo después del map (sin estado):', usuariosObjetivo);
-        }
+        dataTodos = sinEstado || [];
       }
+      usuariosObjetivo = (dataTodos || []).filter(u => u && u.id != null).map(u => Number(u.id));
+      console.log('Usuarios a procesar (aplicar_a_todos):', usuariosObjetivo.length);
     } else if (aplicar_a_todos_condominios) {
-      // Obtener todos los usuarios activos que pertenezcan a algún condominio (excepto admins)
-      const { data: usuariosCondominios, error: condError } = await supabase
+      // Obtener todos los usuarios que pertenezcan a algún condominio (excepto admins)
+      // Primero intentar con filtro estado=Activo; si falla (ej. columna no existe), usar sin filtro estado
+      let usuariosCondominios: { id: number }[] | null = null;
+      const { data: conEstado, error: condError } = await supabase
         .from('usuarios')
         .select('id')
         .neq('rol', 'admin')
         .not('condominio_id', 'is', null)
         .eq('Estado', 'Activo');
-      
-      if (condError) {
-        console.error('Error obteniendo usuarios de condominios:', condError);
-        throw condError;
+
+      if (!condError && conEstado?.length !== undefined) {
+        usuariosCondominios = conEstado;
+        console.log('Usuarios con condominio y estado Activo:', usuariosCondominios.length);
       }
-      
-      usuariosObjetivo = usuariosCondominios?.map(u => u.id) || [];
-      console.log('Usuarios encontrados con Estado=Activo (aplicar_a_todos_condominios):', usuariosObjetivo.length);
-      
-      // Si no se encontraron usuarios activos, obtener todos los no-admin con condominio (sin filtro de estado)
-      if (usuariosObjetivo.length === 0) {
-        console.log('No se encontraron usuarios con Estado=Activo, obteniendo todos los no-admin con condominio...');
-        const { data: usuariosCondominiosSinEstado, error: condErrorSinEstado } = await supabase
+
+      if (!usuariosCondominios || usuariosCondominios.length === 0) {
+        const { data: sinEstado, error: condErrorSinEstado } = await supabase
           .from('usuarios')
           .select('id')
           .neq('rol', 'admin')
           .not('condominio_id', 'is', null);
-        
+
         if (condErrorSinEstado) {
-          console.error('Error obteniendo usuarios sin filtro de estado:', condErrorSinEstado);
-          throw condErrorSinEstado;
+          console.error('Error obteniendo usuarios de condominios:', condErrorSinEstado);
+          throw new Error('No se pudieron cargar los usuarios. Compruebe que la tabla usuarios tenga la columna condominio_id y que existan usuarios con condominio asignado.');
         }
-        
-        usuariosObjetivo = usuariosCondominiosSinEstado?.map(u => u.id) || [];
-        console.log('Usuarios encontrados sin filtro de estado (aplicar_a_todos_condominios):', usuariosObjetivo.length);
+        usuariosCondominios = sinEstado || [];
+        console.log('Usuarios con condominio (sin filtro estado):', usuariosCondominios.length);
       }
+
+      usuariosObjetivo = usuariosCondominios.map(u => u.id);
     } else if (condominio_id) {
-      // Obtener usuarios del condominio específico
-      const { data: usuariosCondominio, error: condError } = await supabase
+      // Obtener usuarios del condominio específico (intentar con estado; si falla, sin filtro estado)
+      let dataCond: { id: number }[] | null = null;
+      const { data: conEstado, error: condError } = await supabase
         .from('usuarios')
         .select('id')
         .eq('condominio_id', condominio_id)
         .neq('rol', 'admin')
         .eq('Estado', 'Activo');
-      
-      if (condError) {
-        console.error('Error obteniendo usuarios del condominio:', condError);
-        throw condError;
+
+      if (!condError && conEstado?.length !== undefined) {
+        dataCond = conEstado;
       }
-      
-      usuariosObjetivo = usuariosCondominio?.map(u => u.id) || [];
-      console.log('Usuarios encontrados con Estado=Activo (condominio_id):', usuariosObjetivo.length);
-      
-      // Si no se encontraron usuarios activos, obtener todos los no-admin del condominio (sin filtro de estado)
-      if (usuariosObjetivo.length === 0) {
-        console.log('No se encontraron usuarios con Estado=Activo, obteniendo todos los no-admin del condominio...');
-        const { data: usuariosCondominioSinEstado, error: condErrorSinEstado } = await supabase
+      if (!dataCond || dataCond.length === 0) {
+        const { data: sinEstado, error: errSin } = await supabase
           .from('usuarios')
           .select('id')
           .eq('condominio_id', condominio_id)
           .neq('rol', 'admin');
-        
-        if (condErrorSinEstado) {
-          console.error('Error obteniendo usuarios sin filtro de estado:', condErrorSinEstado);
-          throw condErrorSinEstado;
+        if (errSin) {
+          console.error('Error obteniendo usuarios del condominio:', errSin);
+          throw new Error('No se pudieron cargar los usuarios del condominio. Verifique que existan usuarios con ese condominio.');
         }
-        
-        usuariosObjetivo = usuariosCondominioSinEstado?.map(u => u.id) || [];
-        console.log('Usuarios encontrados sin filtro de estado (condominio_id):', usuariosObjetivo.length);
+        dataCond = sinEstado || [];
       }
+      usuariosObjetivo = dataCond?.map(u => u.id) || [];
+      console.log('Usuarios del condominio a procesar:', usuariosObjetivo.length);
     } else if (usuario_ids && usuario_ids.length > 0) {
       usuariosObjetivo = usuario_ids;
     } else {
@@ -964,17 +1195,15 @@ export const crearPagosMasivos = async ({
     console.log('Debug - usuariosObjetivo.length:', usuariosObjetivo.length);
     
     if (usuariosObjetivo.length === 0) {
-      // Obtener información de debug
-      const { data: debugUsuarios, error: debugError } = await supabase
-        .from('usuarios')
-        .select('id, nombre, rol')
-        .limit(5);
-      
-      console.error('Debug - Usuarios encontrados (sin filtros):', debugUsuarios);
-      console.error('Debug - Error:', debugError);
-      console.error('Debug - Tipo de aplicación:', aplicar_a_todos ? 'todos' : aplicar_a_todos_condominios ? 'todos_condominios' : condominio_id ? 'condominio' : usuario_ids ? 'usuarios' : 'ninguno');
-      
-      throw new Error('No se encontraron usuarios para crear los pagos. Verifique que existan usuarios en la plataforma y que cumplan los criterios seleccionados.');
+      let mensaje = 'No se encontraron usuarios para crear los pagos.';
+      if (aplicar_a_todos_condominios) {
+        mensaje += ' Para "Todos los condominios" cada usuario debe tener un condominio asignado (campo condominio_id). Asigne condominios en Residentes o use "Todos los usuarios activos".';
+      } else if (condominio_id) {
+        mensaje += ' No hay usuarios en ese condominio o no tienen rol distinto de admin.';
+      } else {
+        mensaje += ' Verifique que existan usuarios que cumplan los criterios seleccionados.';
+      }
+      throw new Error(mensaje);
     }
     
     console.log('Debug - usuariosObjetivo final:', usuariosObjetivo);
@@ -999,14 +1228,25 @@ export const crearPagosMasivos = async ({
       }
     });
 
+    // Obtener condominio_id de cada usuario para asignar al pago
+    const { data: usuariosCondominioData } = await supabase
+      .from('usuarios')
+      .select('id, condominio_id')
+      .in('id', usuariosObjetivo);
+    const condominioMap = new Map<number, number | null>();
+    usuariosCondominioData?.forEach((u: any) => {
+      condominioMap.set(u.id, u.condominio_id ?? null);
+    });
+
     // Mapear tipo de pago
     const tipoMapeado = typeof tipo === 'string' ? mapearTipoPago(tipo) : tipo;
 
-    // Crear pagos para cada usuario
-    // Nota: El schema de la BD no incluye vivienda_id ni comprobante_archivo_id en la tabla pagos
+    // Crear pagos para cada usuario (incluye condominio_id del usuario)
     const pagosACrear = usuariosObjetivo.map(usuario_id => {
       return {
         usuario_id,
+        vivienda_id: viviendaMap.get(usuario_id) ?? null,
+        condominio_id: condominioMap.get(usuario_id) ?? null,
         concepto,
         monto,
         tipo: tipoMapeado,
@@ -1016,20 +1256,49 @@ export const crearPagosMasivos = async ({
         referencia: null,
         metodo_pago: null,
         observaciones: `Pago creado masivamente por administrador`,
+        abono: 0,
         created_at: getCurrentLocalISOString(),
         updated_at: getCurrentLocalISOString()
       };
     });
 
-    // Insertar pagos en lote
-    const { data: pagosCreados, error: insertError } = await supabase
+    // Insertar pagos en lote (cast: tipos generados pueden no incluir condominio_id/abono hasta regenerar)
+    let pagosCreados: { id: number; usuario_id: number | null }[] = [];
+    let insertError: any = null;
+    const { data: dataInsert, error: errInsert } = await supabase
       .from('pagos')
-      .insert(pagosACrear)
+      .insert(pagosACrear as any)
       .select('id, usuario_id');
 
-    if (insertError) {
-      console.error('Error creando pagos masivos:', insertError);
-      throw new Error('Error al crear los pagos masivos');
+    if (!errInsert) {
+      pagosCreados = dataInsert ?? [];
+    } else {
+      insertError = errInsert;
+    }
+
+    // Si falla (ej. columnas condominio_id/abono/vivienda_id no existen), reintentar solo con campos básicos
+    if ((!pagosCreados || pagosCreados.length === 0) && insertError) {
+      console.warn('Insert con todos los campos falló, reintentando sin condominio_id/vivienda_id/abono:', insertError.message);
+      const pagosMinimos = usuariosObjetivo.map(usuario_id => ({
+        usuario_id,
+        concepto,
+        monto,
+        tipo: tipoMapeado,
+        estado: 'pendiente' as const,
+        fecha_vencimiento: fecha_vencimiento || null,
+        observaciones: 'Pago creado masivamente por administrador',
+        created_at: getCurrentLocalISOString(),
+        updated_at: getCurrentLocalISOString()
+      }));
+      const { data: dataRetry, error: errRetry } = await supabase
+        .from('pagos')
+        .insert(pagosMinimos as any)
+        .select('id, usuario_id');
+      if (errRetry) {
+        console.error('Error creando pagos masivos (reintento):', errRetry);
+        throw new Error('Error al crear los pagos masivos. ' + (errRetry.message || ''));
+      }
+      pagosCreados = (dataRetry || []) as { id: number; usuario_id: number | null }[];
     }
 
     // Crear registros en historial para cada pago
@@ -1050,6 +1319,8 @@ export const crearPagosMasivos = async ({
       await supabase
         .from('historial_pagos')
         .insert(historiales);
+
+      // El abono ya no se aplica automáticamente: el usuario elige usarlo al enviar comprobante.
     }
 
     // Notificar a los usuarios afectados
@@ -1991,6 +2262,7 @@ export const actualizarEspacioComun = async (
     capacidad?: number | null;
     horarios?: string | null;
     equipamiento?: string[] | null;
+    imagen_url?: string | null;
   }
 ) => {
   try {
@@ -2394,7 +2666,8 @@ export const crearSolicitudMantenimiento = async ({
   descripcion,
   prioridad = 'media' as PrioridadEnum,
   ubicacion,
-  estado = 'pendiente' as EstadoEnum
+  estado = 'pendiente' as EstadoEnum,
+  tipo = 'mantenimiento' as 'mantenimiento' | 'servicio'
 }: {
   condominio_id?: number;
   usuario_solicitante_id: number;
@@ -2403,6 +2676,7 @@ export const crearSolicitudMantenimiento = async ({
   prioridad?: PrioridadEnum;
   ubicacion?: string;
   estado?: EstadoEnum;
+  tipo?: 'mantenimiento' | 'servicio';
 }) => {
   try {
     // Verificar que el usuario existe
@@ -2419,24 +2693,26 @@ export const crearSolicitudMantenimiento = async ({
     // Usar condominio_id del usuario si no se proporciona
     const condominioIdFinal = condominio_id || usuario.condominio_id;
 
+    const payload: Record<string, unknown> = {
+      condominio_id: condominioIdFinal,
+      usuario_solicitante_id,
+      titulo,
+      descripcion,
+      prioridad: prioridad || ('media' as PrioridadEnum),
+      ubicacion: ubicacion || null,
+      estado: estado || ('pendiente' as EstadoEnum),
+      fecha_solicitud: getCurrentLocalISOString(),
+      fecha_inicio: null,
+      fecha_completado: null,
+      responsable_id: null,
+      observaciones: null,
+      created_at: getCurrentLocalISOString(),
+      updated_at: getCurrentLocalISOString(),
+      tipo: tipo || 'mantenimiento',
+    };
     const { data, error } = await supabase
       .from('solicitudes_mantenimiento')
-      .insert([{
-        condominio_id: condominioIdFinal,
-        usuario_solicitante_id,
-        titulo,
-        descripcion,
-        prioridad: prioridad || ('media' as PrioridadEnum),
-        ubicacion: ubicacion || null,
-        estado: estado || ('pendiente' as EstadoEnum),
-        fecha_solicitud: getCurrentLocalISOString(),
-        fecha_inicio: null,
-        fecha_completado: null,
-        responsable_id: null,
-        observaciones: null,
-        created_at: getCurrentLocalISOString(),
-        updated_at: getCurrentLocalISOString()
-      }])
+      .insert([payload])
       .select(`
         *,
         usuarios!solicitudes_mantenimiento_usuario_solicitante_id_fkey(nombre, correo)
@@ -2468,10 +2744,40 @@ export const crearSolicitudMantenimiento = async ({
 
 // ==================== GESTIÓN DE AVANCES DE MANTENIMIENTO ====================
 
-// Obtener avances de una solicitud de mantenimiento
+const BUCKET_AVANCES = 'condominio-files';
+const EXPIRACION_URL_FIRMADA_SEG = 3600; // 1 hora
+
+/** Obtiene una URL firmada para mostrar la imagen (funciona con bucket público o privado) */
+const obtenerUrlFirmadaParaFoto = async (fotoUrl: string | null): Promise<string | null> => {
+  if (!fotoUrl || !fotoUrl.trim()) return null;
+  try {
+    // Si ya es una URL firmada (contiene 'token='), devolverla
+    if (fotoUrl.includes('token=')) return fotoUrl;
+    let path: string | null = null;
+    // Si es una URL completa, extraer path: .../object/public/condominio-files/PATH
+    if (fotoUrl.includes('condominio-files')) {
+      const match = fotoUrl.match(/condominio-files\/(.+?)(?:\?|$)/);
+      path = match ? match[1].trim() : null;
+    }
+    // Si no tiene http, asumir que es el path directo (ej: mantenimiento/1/xxx.jpg)
+    if (!path && !fotoUrl.startsWith('http')) path = fotoUrl.split('?')[0].trim();
+    if (!path) return fotoUrl;
+    const { data, error } = await supabase.storage
+      .from(BUCKET_AVANCES)
+      .createSignedUrl(path, EXPIRACION_URL_FIRMADA_SEG);
+    if (error) {
+      console.warn('Error creando URL firmada para avance:', error);
+      return fotoUrl;
+    }
+    return data?.signedUrl ?? fotoUrl;
+  } catch {
+    return fotoUrl;
+  }
+};
+
+// Obtener avances de una solicitud de mantenimiento (con URLs firmadas para las fotos)
 export const fetchAvancesMantenimiento = async (solicitud_id: number) => {
   try {
-    // Intentar obtener desde tabla avances_mantenimiento
     const { data: avances, error } = await supabase
       .from('avances_mantenimiento')
       .select(`
@@ -2482,19 +2788,51 @@ export const fetchAvancesMantenimiento = async (solicitud_id: number) => {
       .order('fecha', { ascending: false });
 
     if (error) {
-      // Si no existe la tabla, retornar array vacío
       console.warn('Error obteniendo avances (la tabla puede no existir aún):', error);
       return [];
     }
 
-    return avances || [];
+    if (!avances || avances.length === 0) return [];
+
+    // Preferir foto_base64 (guardada en BDD) para acceso directo; si no hay, usar URL firmada de foto_url (bucket legacy)
+    // hasPhotoInDb: true when a photo was uploaded (so admin can delete it even if it doesn't display)
+    const avancesConFoto = await Promise.all(
+      avances.map(async (avance: any) => {
+        const hasPhotoInDb = !!(avance.foto_base64 && String(avance.foto_base64).trim()) ||
+          !!(avance.foto_url && String(avance.foto_url).trim());
+        const tieneBase64 = avance.foto_base64 && String(avance.foto_base64).trim().startsWith('data:image');
+        const urlParaMostrar = tieneBase64
+          ? avance.foto_base64
+          : await obtenerUrlFirmadaParaFoto(avance.foto_url ?? null);
+        return {
+          ...avance,
+          foto_url: urlParaMostrar,
+          hasPhotoInDb,
+        };
+      })
+    );
+    return avancesConFoto;
   } catch (error) {
     console.error('Error en fetchAvancesMantenimiento:', error);
     return [];
   }
 };
 
-// Agregar avance a una solicitud de mantenimiento
+/** Convierte un File a data URL (base64) para guardar en la BDD */
+const fileToDataUrl = (file: File): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    if (!file.type.startsWith('image/')) {
+      reject(new Error('El archivo debe ser una imagen'));
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+};
+
+// Agregar avance a una solicitud de mantenimiento (foto se guarda en BDD como base64, no en bucket)
 export const agregarAvanceMantenimiento = async ({
   solicitud_id,
   descripcion,
@@ -2507,39 +2845,29 @@ export const agregarAvanceMantenimiento = async ({
   creado_por: number;
 }) => {
   try {
-    let foto_url: string | null = null;
+    let foto_base64: string | null = null;
 
-    // Subir foto si existe
+    // Guardar foto en la BDD como base64 (data URL) para acceso directo sin bucket
     if (foto_file) {
-      const fileExt = foto_file.name.split('.').pop();
-      const fileName = `mantenimiento/${solicitud_id}/${Date.now()}_${Math.random().toString(36).substring(7)}.${fileExt}`;
-      const filePath = fileName;
-
-      const { error: uploadError } = await supabase.storage
-        .from('condominio-files')
-        .upload(filePath, foto_file);
-
-      if (!uploadError) {
-        const { data: { publicUrl } } = supabase.storage
-          .from('condominio-files')
-          .getPublicUrl(filePath);
-        foto_url = publicUrl;
-      } else {
-        console.warn('Error subiendo foto de avance:', uploadError);
+      if (foto_file.size > 5 * 1024 * 1024) {
+        throw new Error('La imagen no debe superar 5 MB');
       }
+      foto_base64 = await fileToDataUrl(foto_file);
     }
 
-    // Insertar avance en la tabla
+    // Insertar avance: foto en columna foto_base64 (no se usa bucket)
+    const payload: Record<string, unknown> = {
+      solicitud_id,
+      descripcion,
+      creado_por,
+      fecha: getCurrentLocalISOString(),
+      foto_url: null,
+      foto_base64: foto_base64 ?? null,
+    };
+
     const { data, error } = await supabase
       .from('avances_mantenimiento')
-      .insert([{
-        solicitud_id,
-        descripcion,
-        foto_url,
-        creado_por,
-        fecha: getCurrentLocalISOString(),
-        created_at: getCurrentLocalISOString()
-      }])
+      .insert([payload])
       .select(`
         *,
         creado_por:usuarios(nombre, correo)
@@ -2547,9 +2875,16 @@ export const agregarAvanceMantenimiento = async ({
       .single();
 
     if (error) {
-      // Si la tabla no existe, lanzar error informativo
       if (error.code === '42P01') {
         throw new Error('La tabla de avances de mantenimiento no está configurada en la base de datos. Contacta al administrador.');
+      }
+      // Columna foto_base64 no existe: hay que ejecutar la migración en Supabase
+      const msg = String(error.message || '');
+      if (msg.includes('foto_base64') || msg.includes('schema cache')) {
+        throw new Error(
+          'Falta la columna foto_base64 en la tabla avances_mantenimiento. ' +
+          'En Supabase: SQL Editor → ejecuta: ALTER TABLE avances_mantenimiento ADD COLUMN IF NOT EXISTS foto_base64 TEXT;'
+        );
       }
       throw error;
     }
@@ -2557,6 +2892,32 @@ export const agregarAvanceMantenimiento = async ({
     return data;
   } catch (error: any) {
     console.error('Error en agregarAvanceMantenimiento:', error);
+    throw error;
+  }
+};
+
+/** Elimina la foto de un avance (solo quita la imagen; el avance sigue existiendo). Para uso del administrador. */
+export const eliminarFotoAvance = async (avance_id: number) => {
+  const { error } = await supabase
+    .from('avances_mantenimiento')
+    .update({ foto_url: null, foto_base64: null })
+    .eq('id', avance_id);
+
+  if (error) {
+    console.error('Error en eliminarFotoAvance:', error);
+    throw error;
+  }
+};
+
+/** Elimina un avance completo (descripción + foto). Para uso del administrador. */
+export const eliminarAvance = async (avance_id: number) => {
+  const { error } = await supabase
+    .from('avances_mantenimiento')
+    .delete()
+    .eq('id', avance_id);
+
+  if (error) {
+    console.error('Error en eliminarAvance:', error);
     throw error;
   }
 };
@@ -2658,6 +3019,45 @@ export const actualizarEstadoSolicitud = async ({
   }
 };
 
+/** Actualizar datos editables de una solicitud de mantenimiento (titulo, descripcion, ubicacion, prioridad, observaciones). */
+export const actualizarSolicitudMantenimiento = async ({
+  solicitud_id,
+  titulo,
+  descripcion,
+  ubicacion,
+  prioridad,
+  observaciones
+}: {
+  solicitud_id: number;
+  titulo?: string;
+  descripcion?: string;
+  ubicacion?: string | null;
+  prioridad?: PrioridadEnum;
+  observaciones?: string | null;
+}) => {
+  try {
+    const updateData: Record<string, unknown> = {
+      updated_at: getCurrentLocalISOString()
+    };
+    if (titulo !== undefined) updateData.titulo = titulo;
+    if (descripcion !== undefined) updateData.descripcion = descripcion;
+    if (ubicacion !== undefined) updateData.ubicacion = ubicacion;
+    if (prioridad !== undefined) updateData.prioridad = prioridad;
+    if (observaciones !== undefined) updateData.observaciones = observaciones;
+
+    const { error } = await supabase
+      .from('solicitudes_mantenimiento')
+      .update(updateData)
+      .eq('id', solicitud_id);
+
+    if (error) throw error;
+    return { success: true, solicitud_id };
+  } catch (error) {
+    console.error('Error en actualizarSolicitudMantenimiento:', error);
+    throw error;
+  }
+};
+
 // 7. DASHBOARD Y ESTADO DE CUENTA
 export const getEstadoCuentaUsuario = async (usuario_id: number) => {
   try {
@@ -2705,6 +3105,288 @@ export const getEstadoCuentaUsuario = async (usuario_id: number) => {
   } catch (error) {
     console.error('Error en getEstadoCuentaUsuario:', error);
     throw error;
+  }
+};
+
+// ==================== GESTIÓN DE ABONOS ====================
+
+/**
+ * Consumir (restar) abono disponible de los pagos que tienen excedente (abono > monto).
+ * Así el recuadro "Abono disponible" refleja lo que queda tras aplicar abono a otras cuotas.
+ */
+const consumirAbonoDisponible = async (usuario_id: number, montoAConsumir: number): Promise<void> => {
+  if (montoAConsumir <= 0) return;
+  try {
+    const { data: pagosConExcedente, error } = await supabase
+      .from('pagos')
+      .select('id, monto, abono')
+      .eq('usuario_id', usuario_id)
+      .eq('estado', 'pagado')
+      .order('fecha_pago', { ascending: true, nullsFirst: true })
+      .order('id', { ascending: true });
+
+    if (error || !pagosConExcedente || pagosConExcedente.length === 0) return;
+
+    let restantePorConsumir = montoAConsumir;
+
+    for (const pago of pagosConExcedente) {
+      if (restantePorConsumir <= 0) break;
+      const montoTotal = parseFloat((pago.monto || 0).toString());
+      const abonoActual = parseFloat((pago.abono || 0).toString());
+      const excedenteEnEstePago = abonoActual - montoTotal;
+      if (excedenteEnEstePago <= 0) continue;
+
+      const aRestar = Math.min(restantePorConsumir, excedenteEnEstePago);
+      const nuevoAbono = abonoActual - aRestar;
+
+      await supabase
+        .from('pagos')
+        .update({
+          abono: nuevoAbono,
+          updated_at: getCurrentLocalISOString()
+        })
+        .eq('id', pago.id);
+
+      restantePorConsumir -= aRestar;
+    }
+  } catch (err) {
+    console.error('Error consumiendo abono disponible:', err);
+  }
+};
+
+/**
+ * Aplicar abono disponible a un pago específico (al enviar comprobante el usuario puede elegir usar su abono).
+ * Consume el abono de los pagos con excedente y suma ese monto al pago indicado.
+ */
+export const aplicarAbonoAPagoEspecifico = async (
+  usuario_id: number,
+  pago_id: number,
+  monto_abono: number
+): Promise<void> => {
+  if (monto_abono <= 0) return;
+  try {
+    await consumirAbonoDisponible(usuario_id, monto_abono);
+    const { data: pago, error: fetchErr } = await supabase
+      .from('pagos')
+      .select('abono')
+      .eq('id', pago_id)
+      .eq('usuario_id', usuario_id)
+      .single();
+    if (fetchErr || !pago) return;
+    const abonoActual = parseFloat((pago.abono || 0).toString());
+    await supabase
+      .from('pagos')
+      .update({
+        abono: abonoActual + monto_abono,
+        updated_at: getCurrentLocalISOString()
+      })
+      .eq('id', pago_id);
+  } catch (err) {
+    console.error('Error en aplicarAbonoAPagoEspecifico:', err);
+    throw err;
+  }
+};
+
+// Obtener abonos disponibles del usuario (excedentes de pagos completados)
+export const obtenerAbonosDisponibles = async (usuario_id: number): Promise<number> => {
+  try {
+    // Obtener todos los pagos del usuario que están pagados
+    const { data: pagosPagados, error } = await supabase
+      .from('pagos')
+      .select('id, monto, abono, estado')
+      .eq('usuario_id', usuario_id)
+      .eq('estado', 'pagado');
+
+    if (error) {
+      console.error('Error obteniendo abonos disponibles:', error);
+      return 0;
+    }
+
+    // Calcular abonos disponibles (excedentes)
+    let abonosDisponibles = 0;
+    if (pagosPagados) {
+      for (const pago of pagosPagados) {
+        const montoTotal = parseFloat((pago.monto || 0).toString());
+        const abono = parseFloat((pago.abono || 0).toString());
+        // Si el abono es mayor al monto total, hay un excedente
+        if (abono > montoTotal) {
+          abonosDisponibles += (abono - montoTotal);
+        }
+      }
+    }
+
+    return abonosDisponibles;
+  } catch (error) {
+    console.error('Error en obtenerAbonosDisponibles:', error);
+    return 0;
+  }
+};
+
+// Aplicar abonos disponibles a pagos pendientes del usuario
+export const aplicarAbonosAPagosPendientes = async (usuario_id: number): Promise<number> => {
+  try {
+    // Obtener abonos disponibles
+    let abonosDisponibles = await obtenerAbonosDisponibles(usuario_id);
+    
+    if (abonosDisponibles <= 0) {
+      return 0; // No hay abonos para aplicar
+    }
+
+    // Obtener pagos pendientes del usuario ordenados por fecha de vencimiento (incluir concepto para observaciones y notificación)
+    const { data: pagosPendientes, error } = await supabase
+      .from('pagos')
+      .select('id, monto, abono, estado, fecha_vencimiento, concepto, observaciones')
+      .eq('usuario_id', usuario_id)
+      .in('estado', ['pendiente', 'vencido'])
+      .order('fecha_vencimiento', { ascending: true, nullsFirst: false });
+
+    if (error || !pagosPendientes || pagosPendientes.length === 0) {
+      return 0; // No hay pagos pendientes
+    }
+
+    let abonosAplicados = 0;
+
+    // Aplicar abonos a cada pago pendiente hasta agotar los abonos disponibles
+    for (const pago of pagosPendientes) {
+      if (abonosDisponibles <= 0) break;
+
+      const montoTotal = parseFloat((pago.monto || 0).toString());
+      const abonoActual = parseFloat((pago.abono || 0).toString());
+      const montoPendiente = montoTotal - abonoActual;
+
+      if (montoPendiente > 0) {
+        // Aplicar abono al pago pendiente
+        const abonoAAplicar = Math.min(abonosDisponibles, montoPendiente);
+        const nuevoAbono = abonoActual + abonoAAplicar;
+        
+        // Determinar el nuevo estado
+        let nuevoEstado = pago.estado;
+        if (nuevoAbono >= montoTotal) {
+          nuevoEstado = 'pagado' as EstadoEnum;
+        }
+
+        // Actualizar el pago
+        const updateData: any = {
+          abono: nuevoAbono,
+          estado: nuevoEstado,
+          updated_at: getCurrentLocalISOString()
+        };
+
+        if (nuevoEstado === 'pagado') {
+          updateData.fecha_pago = getCurrentLocalISOString();
+          // Marcar motivo/descripción para que el administrador sepa que la cuota se canceló por abono (excedente)
+          const motivoAbono = `Cancelado por abono (excedente de pago anterior). Monto aplicado: ${abonoAAplicar.toFixed(2)} Bs.`;
+          updateData.observaciones = (pago.observaciones && String(pago.observaciones).trim() ? `${String(pago.observaciones).trim()}\n\n${motivoAbono}` : motivoAbono);
+        }
+
+        await supabase
+          .from('pagos')
+          .update(updateData)
+          .eq('id', pago.id);
+
+        // Restar el abono aplicado de los pagos con excedente (para que el recuadro "Abono disponible" se actualice)
+        await consumirAbonoDisponible(usuario_id, abonoAAplicar);
+
+        // Notificar a los administradores cuando una cuota se cancela por abono
+        if (nuevoEstado === 'pagado') {
+          try {
+            const { data: usuarioData } = await supabase
+              .from('usuarios')
+              .select('nombre')
+              .eq('id', usuario_id)
+              .single();
+            const nombreResidente = usuarioData?.nombre || 'Residente';
+            const conceptoPago = pago.concepto || 'Cuota';
+            const mensaje = `El pago "${conceptoPago}" del residente ${nombreResidente} fue cancelado automáticamente por abono (excedente de pago anterior). Monto aplicado: ${abonoAAplicar.toFixed(2)} Bs. Al validar o consultar este pago verá el motivo "abono".`;
+            await notificarAdministradores(usuario_id, 'pago_cancelado_por_abono', mensaje, pago.id, 'pagos');
+          } catch (notifErr) {
+            console.warn('Error notificando a administradores (pago cancelado por abono):', notifErr);
+          }
+        }
+
+        abonosDisponibles -= abonoAAplicar;
+        abonosAplicados += abonoAAplicar;
+      }
+    }
+
+    return abonosAplicados;
+  } catch (error) {
+    console.error('Error en aplicarAbonosAPagosPendientes:', error);
+    return 0;
+  }
+};
+
+// Aplicar abonos a un nuevo pago cuando se crea
+export const aplicarAbonosANuevoPago = async (
+  usuario_id: number,
+  nuevoPagoId: number,
+  montoCuota: number
+): Promise<{ abonoAplicado: number; montoRestante: number }> => {
+  try {
+    // Obtener abonos disponibles
+    let abonosDisponibles = await obtenerAbonosDisponibles(usuario_id);
+    
+    if (abonosDisponibles <= 0) {
+      return { abonoAplicado: 0, montoRestante: montoCuota };
+    }
+
+    // Aplicar abono al nuevo pago
+    const abonoAAplicar = Math.min(abonosDisponibles, montoCuota);
+    const montoRestante = montoCuota - abonoAAplicar;
+
+    // Determinar el estado inicial
+    let estadoInicial: EstadoEnum = 'pendiente';
+    if (abonoAAplicar >= montoCuota) {
+      estadoInicial = 'pagado';
+    }
+
+    // Actualizar el nuevo pago
+    const updateData: any = {
+      abono: abonoAAplicar,
+      estado: estadoInicial,
+      updated_at: getCurrentLocalISOString()
+    };
+
+    if (estadoInicial === 'pagado') {
+      updateData.fecha_pago = getCurrentLocalISOString();
+      // Marcar motivo/descripción para que el administrador sepa que la cuota se canceló por abono (excedente)
+      updateData.observaciones = `Cancelado por abono (excedente de pago anterior). Monto aplicado: ${abonoAAplicar.toFixed(2)} Bs.`;
+    }
+
+    await supabase
+      .from('pagos')
+      .update(updateData)
+      .eq('id', nuevoPagoId);
+
+    // Restar el abono aplicado de los pagos con excedente (para que el recuadro "Abono disponible" se actualice)
+    await consumirAbonoDisponible(usuario_id, abonoAAplicar);
+
+    // Notificar a los administradores cuando el nuevo pago se cancela íntegramente por abono
+    if (estadoInicial === 'pagado') {
+      try {
+        const { data: pagoData } = await supabase
+          .from('pagos')
+          .select('concepto')
+          .eq('id', nuevoPagoId)
+          .single();
+        const { data: usuarioData } = await supabase
+          .from('usuarios')
+          .select('nombre')
+          .eq('id', usuario_id)
+          .single();
+        const nombreResidente = usuarioData?.nombre || 'Residente';
+        const conceptoPago = pagoData?.concepto || 'Cuota';
+        const mensaje = `El pago "${conceptoPago}" del residente ${nombreResidente} fue cancelado automáticamente por abono (excedente de pago anterior). Monto aplicado: ${abonoAAplicar.toFixed(2)} Bs. Al validar o consultar este pago verá el motivo "abono".`;
+        await notificarAdministradores(usuario_id, 'pago_cancelado_por_abono', mensaje, nuevoPagoId, 'pagos');
+      } catch (notifErr) {
+        console.warn('Error notificando a administradores (nuevo pago cancelado por abono):', notifErr);
+      }
+    }
+
+    return { abonoAplicado: abonoAAplicar, montoRestante };
+  } catch (error) {
+    console.error('Error en aplicarAbonosANuevoPago:', error);
+    return { abonoAplicado: 0, montoRestante: montoCuota };
   }
 };
 

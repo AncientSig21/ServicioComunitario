@@ -11,7 +11,9 @@ interface Residente {
   telefono: string | null;
   cedula: string | null;
   rol: string | null;
-  estado: string | null;
+  /** Columna en BD: Estado (mayúscula); se mantiene estado por compatibilidad */
+  Estado?: string | null;
+  estado?: string | null;
   condominio_id: number | null;
   condominios?: {
     nombre: string;
@@ -96,7 +98,7 @@ const AdminResidentesPage = () => {
 
     // Filtro por Estado
     if (filtroEstado) {
-      filtered = filtered.filter(residente => residente.estado === filtroEstado);
+      filtered = filtered.filter(residente => (residente.Estado ?? residente.estado) === filtroEstado);
     }
 
     setFilteredResidentes(filtered);
@@ -127,7 +129,7 @@ const AdminResidentesPage = () => {
   // Función para abrir modal de edición de estado
   const handleEditarEstado = (residente: Residente) => {
     setResidenteSeleccionado(residente);
-    setNuevoEstado((residente.estado as 'Activo' | 'Moroso' | 'Inactivo') || 'Activo');
+    setNuevoEstado((residente.Estado ?? residente.estado) as 'Activo' | 'Moroso' | 'Inactivo' || 'Activo');
     setShowEditModal(true);
   };
 
@@ -270,12 +272,12 @@ const AdminResidentesPage = () => {
                     </td>
                     <td className="px-4 py-3 text-sm">
                       <span className={`px-2 py-1 rounded text-xs ${
-                        residente.estado === 'Activo' ? 'bg-green-100 text-green-800' :
-                        residente.estado === 'Moroso' ? 'bg-red-100 text-red-800' :
-                        residente.estado === 'Inactivo' ? 'bg-gray-100 text-gray-800' :
+                        (residente.Estado ?? residente.estado) === 'Activo' ? 'bg-green-100 text-green-800' :
+                        (residente.Estado ?? residente.estado) === 'Moroso' ? 'bg-red-100 text-red-800' :
+                        (residente.Estado ?? residente.estado) === 'Inactivo' ? 'bg-gray-100 text-gray-800' :
                         'bg-gray-200 text-gray-700'
                       }`}>
-                        {residente.estado || 'N/A'}
+                        {residente.Estado ?? residente.estado ?? 'N/A'}
                       </span>
                     </td>
                     <td className="px-4 py-3 text-sm">
@@ -333,9 +335,9 @@ const AdminResidentesPage = () => {
               <p className="text-sm text-gray-600 mb-4">
                 <span className="font-semibold">Estado actual:</span>{' '}
                 <span className={`px-2 py-1 rounded text-xs ${
-                  residenteSeleccionado.estado === 'Activo' ? 'bg-green-100 text-green-800' :
-                  residenteSeleccionado.estado === 'Moroso' ? 'bg-red-100 text-red-800' :
-                  residenteSeleccionado.estado === 'Inactivo' ? 'bg-gray-100 text-gray-800' :
+                  (residenteSeleccionado.Estado ?? residenteSeleccionado.estado) === 'Activo' ? 'bg-green-100 text-green-800' :
+                  (residenteSeleccionado.Estado ?? residenteSeleccionado.estado) === 'Moroso' ? 'bg-red-100 text-red-800' :
+                  (residenteSeleccionado.Estado ?? residenteSeleccionado.estado) === 'Inactivo' ? 'bg-gray-100 text-gray-800' :
                   'bg-gray-200 text-gray-700'
                 }`}>
                   {residenteSeleccionado.estado || 'N/A'}

@@ -15,8 +15,8 @@ const servicios = [
   },
   {
     icon: '📅',
-    label: 'Reservas',
-    description: 'Espacios comunes',
+    label: 'Espacios comunes',
+    description: 'Reserva de áreas y espacios',
     categoria: 'reservas',
   },
   {

@@ -191,7 +191,7 @@ export const ReservasPage = () => {
           <BackToHome />
           <div className="mt-6">
             <h1 className="text-3xl sm:text-4xl font-bold text-gray-900 mb-2">
-              📅 Reservas de Espacios Comunes
+              📅 Espacios comunes
             </h1>
             <p className="text-gray-600 text-base sm:text-lg">
               Consulta los espacios comunes disponibles en la comunidad y realiza tus reservas

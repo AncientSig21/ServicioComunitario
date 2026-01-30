@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { fetchPagos, validarPago, crearNotificacion, fetchSolicitudesMantenimiento, actualizarEstadoSolicitud, fetchEspaciosPendientes, validarEspacioComun, eliminarEspacioComun } from '../services/bookService';
+import { fetchPagos, fetchPagoById, validarPago, crearNotificacion, fetchSolicitudesMantenimiento, actualizarEstadoSolicitud, fetchEspaciosPendientes, validarEspacioComun, eliminarEspacioComun, parsearExcedenteDeObservaciones } from '../services/bookService';
 import { useAuth } from '../hooks/useAuth';
 import { Pagination } from '../components/shared/Pagination';
 import { FaCheck, FaTimes, FaEye, FaDollarSign, FaCalendarAlt, FaTools, FaBuilding } from 'react-icons/fa';
@@ -460,18 +460,25 @@ const AdminValidacionPagosPage = () => {
     return badges[estado] || 'bg-gray-400 text-white';
   };
 
-  const handleAbrirModalValidacion = (pago: Pago) => {
-    setPagoSeleccionado(pago);
-    const montoActual = pago.abono !== undefined && pago.abono !== null 
-      ? pago.abono 
-      : (pago.monto_pagado || 0);
-    const montoRestante = pago.monto - montoActual;
-    
+  const handleAbrirModalValidacion = async (pago: Pago) => {
+    // Refrescar el pago desde la BD para tener el abono actual (ej. si el usuario usó abono al enviar comprobante)
+    const pagoActual = await fetchPagoById(pago.id);
+    const pagoParaUsar = pagoActual
+      ? { ...pago, ...pagoActual, abono: pagoActual.abono ?? pago.abono, monto_pagado: pagoActual.abono ?? pago.monto_pagado }
+      : pago;
+    setPagoSeleccionado(pagoParaUsar);
+    const montoActual = pagoParaUsar.abono !== undefined && pagoParaUsar.abono !== null
+      ? Number(pagoParaUsar.abono)
+      : (Number((pagoParaUsar as any).monto_pagado) || 0);
+    const montoTotal = Number(pagoParaUsar.monto);
+    const montoRestante = montoTotal - montoActual;
+    // Monto a aprobar = solo lo que falta. Si el usuario ya pagó todo con abono, debe ser 0 (no duplicar a 200).
+    const montoAprobar = montoRestante > 0 ? montoRestante : 0;
     setFormValidacion({
       nuevo_estado: montoRestante > 0 ? 'pendiente' : 'pagado',
-      monto_aprobado: montoRestante > 0 ? montoRestante.toString() : pago.monto.toString(),
-      metodo_pago: pago.metodo_pago || '',
-      referencia: pago.referencia || '',
+      monto_aprobado: montoAprobar.toString(),
+      metodo_pago: pagoParaUsar.metodo_pago || '',
+      referencia: pagoParaUsar.referencia || '',
       observaciones: '',
     });
     setShowValidationModal(true);
@@ -480,12 +487,14 @@ const AdminValidacionPagosPage = () => {
   const handleValidarPago = async () => {
     if (!user?.id || !pagoSeleccionado) return;
 
-    if (!formValidacion.monto_aprobado || parseFloat(formValidacion.monto_aprobado) <= 0) {
-      alert('El monto aprobado debe ser mayor a 0');
+    const montoAprobado = parseFloat(formValidacion.monto_aprobado || '0');
+    const montoPendiente = pagoSeleccionado.monto - (pagoSeleccionado.abono ?? pagoSeleccionado.monto_pagado ?? 0);
+    // Si aún hay pendiente por aprobar, el monto aprobado debe ser > 0; si ya está todo pagado, puede ser 0 (solo confirmar)
+    if (montoPendiente > 0 && montoAprobado <= 0) {
+      alert('El monto aprobado debe ser mayor a 0 cuando hay saldo pendiente');
       return;
     }
 
-    const montoAprobado = parseFloat(formValidacion.monto_aprobado);
     const montoActual = pagoSeleccionado.abono !== undefined && pagoSeleccionado.abono !== null 
       ? pagoSeleccionado.abono 
       : (pagoSeleccionado.monto_pagado || 0);
@@ -1305,8 +1314,82 @@ const AdminValidacionPagosPage = () => {
                 Validar Pago
               </h2>
               
+              {/* Datos ingresados por el usuario (referencia, comprobante, etc.) */}
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 mb-4">
+                <h3 className="text-sm font-semibold text-amber-900 mb-3">Datos ingresados por el usuario</h3>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="col-span-2 sm:col-span-1">
+                    <p className="text-sm text-gray-600 mb-1">Referencia del pago:</p>
+                    <p className="font-mono font-semibold text-gray-900 break-all">
+                      {pagoSeleccionado.referencia && pagoSeleccionado.referencia.trim() !== '' ? pagoSeleccionado.referencia : '—'}
+                    </p>
+                  </div>
+                  {pagoSeleccionado.metodo_pago && (
+                    <div>
+                      <p className="text-sm text-gray-600 mb-1">Método de pago indicado:</p>
+                      <p className="font-semibold text-gray-900">{pagoSeleccionado.metodo_pago}</p>
+                    </div>
+                  )}
+                  {pagoSeleccionado.archivos?.url && (
+                    <div className={pagoSeleccionado.metodo_pago ? '' : 'col-span-2 sm:col-span-1'}>
+                      <p className="text-sm text-gray-600 mb-1">Comprobante:</p>
+                      <a
+                        href={pagoSeleccionado.archivos.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 text-blue-600 hover:underline font-medium"
+                      >
+                        <FaEye />
+                        Ver comprobante
+                      </a>
+                    </div>
+                  )}
+                </div>
+                {pagoSeleccionado.observaciones && pagoSeleccionado.observaciones.trim() !== '' && (
+                  <div className="mt-3 pt-3 border-t border-amber-200">
+                    <p className="text-sm text-gray-600 mb-1">Observaciones del usuario:</p>
+                    <p className="text-gray-900 text-sm bg-white/60 p-2 rounded">{pagoSeleccionado.observaciones}</p>
+                  </div>
+                )}
+              </div>
+
+              {/* Excedente / Abono a favor: visible para el administrador al validar */}
+              {(() => {
+                const excedente = parsearExcedenteDeObservaciones(pagoSeleccionado.observaciones);
+                if (excedente <= 0) return null;
+                return (
+                  <div className="bg-blue-50 border border-blue-300 rounded-lg p-4 mb-4">
+                    <h3 className="text-sm font-semibold text-blue-900 mb-2 flex items-center gap-2">
+                      <span>💰</span> Excedente / Abono a favor
+                    </h3>
+                    <p className="text-lg font-bold text-blue-700">{formatMonto(excedente)}</p>
+                    <p className="text-sm text-blue-800 mt-1">
+                      El usuario pagó por encima del monto de esta cuota. Al aprobar este pago, este monto se registrará como abono y se descontará automáticamente de su próxima cuota pendiente o del próximo pago que se le cree.
+                    </p>
+                  </div>
+                );
+              })()}
+
+              {/* Motivo "abono": cuota cancelada por excedente de pago anterior */}
+              {pagoSeleccionado.observaciones && String(pagoSeleccionado.observaciones).includes('Cancelado por abono') && (
+                <div className="bg-emerald-50 border-2 border-emerald-400 rounded-lg p-4 mb-4">
+                  <h3 className="text-sm font-bold text-emerald-900 mb-2 flex items-center gap-2">
+                    <span>💰</span> Motivo: Abono (excedente de pago anterior)
+                  </h3>
+                  <p className="text-emerald-800 text-sm">
+                    Esta cuota fue cancelada automáticamente por abono (excedente de un pago anterior). El residente no realizó un pago con comprobante para esta cuota; el saldo se cubrió con el excedente aprobado de un pago previo.
+                  </p>
+                  {pagoSeleccionado.observaciones.trim() !== '' && (
+                    <p className="text-emerald-700 text-xs mt-2 bg-white/60 p-2 rounded font-mono">
+                      {pagoSeleccionado.observaciones}
+                    </p>
+                  )}
+                </div>
+              )}
+
               {/* Información del pago */}
               <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-4">
+                <h3 className="text-sm font-semibold text-blue-900 mb-3">Resumen del pago</h3>
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <p className="text-sm text-gray-600 mb-1">Usuario:</p>
@@ -1342,6 +1425,15 @@ const AdminValidacionPagosPage = () => {
                 </div>
               </div>
 
+              {/* Aviso cuando el usuario ya pagó con abono: total de la cuota es el monto mostrado, no se suma de nuevo */}
+              {calcularMontoPendiente(pagoSeleccionado) <= 0 && obtenerMontoPagado(pagoSeleccionado) > 0 && (
+                <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-4">
+                  <p className="text-sm text-amber-800">
+                    <strong>Pago ya cubierto (abono/comprobante).</strong> El monto total de esta cuota es {formatMonto(pagoSeleccionado.monto)}. El usuario ya aplicó su abono; no ingrese un monto adicional. Solo confirme la aprobación con 0.
+                  </p>
+                </div>
+              )}
+
               <div className="space-y-4">
                 {/* Monto aprobado */}
                 <div>
@@ -1351,7 +1443,7 @@ const AdminValidacionPagosPage = () => {
                   <input
                     type="number"
                     step="0.01"
-                    min="0.01"
+                    min="0"
                     max={calcularMontoPendiente(pagoSeleccionado)}
                     value={formValidacion.monto_aprobado}
                     onChange={(e) => {
@@ -1470,7 +1562,7 @@ const AdminValidacionPagosPage = () => {
               <div className="flex gap-3 mt-6">
                 <button
                   onClick={handleValidarPago}
-                  disabled={loading || !formValidacion.monto_aprobado || parseFloat(formValidacion.monto_aprobado) <= 0}
+                  disabled={loading || (parseFloat(formValidacion.monto_aprobado) < 0) || (parseFloat(formValidacion.monto_aprobado) <= 0 && pagoSeleccionado != null && calcularMontoPendiente(pagoSeleccionado) > 0)}
                   className="flex-1 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                 >
                   <FaCheck />

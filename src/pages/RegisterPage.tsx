@@ -260,7 +260,7 @@ export const RegisterPage = () => {
             cedula: cedula || null,
             rol: null, // Pendiente de aprobación del administrador (default es 'residente' pero lo dejamos null)
             contraseña: password,
-            estado: 'Activo', // Estado inicial: Activo (sin deudas, sin pagos pendientes)
+            Estado: 'Activo', // Estado inicial: Activo (sin deudas, sin pagos pendientes)
             condominio_id: condominioIdFinal || null
             // auth_uid se genera automáticamente en la BD
             // created_at y updated_at se generan automáticamente

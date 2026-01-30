@@ -8,6 +8,7 @@ interface Pago {
   id: number;
   usuario_id: number;
   vivienda_id: number | null;
+  condominio_id?: number | null;
   concepto: string;
   monto: number;
   tipo: string;
@@ -49,6 +50,7 @@ const AdminPagosPage = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [filtroEstado, setFiltroEstado] = useState<string>('');
   const [filtroTipo, setFiltroTipo] = useState<string>('');
+  const [filtroCondominioId, setFiltroCondominioId] = useState<string>('');
 
   // Estados para formulario de creación masiva
   const [formData, setFormData] = useState({
@@ -75,7 +77,7 @@ const AdminPagosPage = () => {
     if (user?.id) {
       cargarDatos();
     }
-  }, [user]);
+  }, [user, filtroCondominioId]);
 
   const cargarDatos = async () => {
     try {
@@ -91,46 +93,12 @@ const AdminPagosPage = () => {
       setCondominios(condominiosData || []);
       setResidentes(residentesData || []);
 
-      // Cargar solo pagos creados por administradores (pagos masivos)
-      const pagosData = await fetchPagos();
-      
-      // Filtrar solo pagos creados masivamente por administradores
-      // Los pagos creados por administradores tienen "Pago creado masivamente por administrador" en observaciones
-      const pagosAdmin = (pagosData || []).filter((pago: any) => {
-        // Incluir solo pagos creados masivamente por administradores
-        // Verificar si contiene la frase específica que se usa al crear pagos masivos
-        const observaciones = pago.observaciones?.toLowerCase() || '';
-        const esAdminCreado = observaciones.includes('pago creado masivamente por administrador') ||
-                              observaciones.includes('creado masivamente por administrador');
-        return esAdminCreado;
-      });
-      
-      // Verificar y eliminar duplicados basados en concepto, monto, fecha_vencimiento y usuario_id
-      // Si hay pagos duplicados con el mismo concepto, monto y fecha_vencimiento para el mismo usuario,
-      // mantener solo el más reciente
-      const pagosSinDuplicados = pagosAdmin.reduce((acc: Pago[], pago: Pago) => {
-        const duplicado = acc.find(p => 
-          p.concepto === pago.concepto &&
-          p.monto === pago.monto &&
-          p.fecha_vencimiento === pago.fecha_vencimiento &&
-          p.usuario_id === pago.usuario_id &&
-          p.id !== pago.id
-        );
-        
-        if (!duplicado) {
-          acc.push(pago);
-        } else {
-          // Mantener el más reciente
-          if (new Date(pago.created_at) > new Date(duplicado.created_at)) {
-            const index = acc.indexOf(duplicado);
-            acc[index] = pago;
-          }
-        }
-        
-        return acc;
-      }, []);
-      
-      setPagos(pagosSinDuplicados);
+      // Cargar historial de todos los pagos (opcionalmente filtrados por condominio)
+      const pagosData = await fetchPagos(
+        filtroCondominioId ? { condominio_id: Number(filtroCondominioId) } : undefined
+      );
+
+      setPagos((pagosData || []) as Pago[]);
     } catch (err: any) {
       console.error('Error cargando datos:', err);
       setError(err.message || 'Error al cargar los datos');
@@ -143,6 +111,10 @@ const AdminPagosPage = () => {
   const pagosFiltrados = pagos.filter(pago => {
     if (filtroEstado && pago.estado !== filtroEstado) return false;
     if (filtroTipo && pago.tipo !== filtroTipo) return false;
+    if (filtroCondominioId) {
+      const pagoCondominioId = pago.condominio_id ?? pago.usuarios?.condominio_id;
+      if (Number(pagoCondominioId) !== Number(filtroCondominioId)) return false;
+    }
     if (searchQuery) {
       const query = searchQuery.toLowerCase();
       return (
@@ -359,9 +331,14 @@ const AdminPagosPage = () => {
   return (
     <div className="max-w-7xl mx-auto">
       <div className="flex justify-between items-center mb-6">
-        <h1 className="text-2xl lg:text-3xl font-bold text-gray-800">
-          Gestión de Pagos
-        </h1>
+        <div>
+          <h1 className="text-2xl lg:text-3xl font-bold text-gray-800">
+            Gestión de Pagos
+          </h1>
+          <p className="text-sm text-gray-500 mt-1">
+            Historial de todos los pagos existentes
+          </p>
+        </div>
         <button
           onClick={() => setShowCreateModal(true)}
           className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium flex items-center gap-2"
@@ -379,7 +356,7 @@ const AdminPagosPage = () => {
 
       {/* Filtros y búsqueda */}
       <div className="bg-white rounded-lg shadow-md p-4 mb-6">
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
           <div className="md:col-span-2">
             <input
               type="text"
@@ -388,6 +365,18 @@ const AdminPagosPage = () => {
               onChange={(e) => setSearchQuery(e.target.value)}
               className="w-full bg-white text-gray-900 border border-gray-300 p-2 rounded focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
             />
+          </div>
+          <div>
+            <select
+              value={filtroCondominioId}
+              onChange={(e) => setFiltroCondominioId(e.target.value)}
+              className="w-full bg-white text-gray-900 border border-gray-300 p-2 rounded focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+            >
+              <option value="">Todos los condominios</option>
+              {condominios.map(cond => (
+                <option key={cond.id} value={cond.id}>{cond.nombre}</option>
+              ))}
+            </select>
           </div>
           <div>
             <select
@@ -440,7 +429,7 @@ const AdminPagosPage = () => {
               {currentPagos.length === 0 ? (
                 <tr>
                   <td colSpan={9} className="px-4 py-8 text-center text-gray-500">
-                    {searchQuery || filtroEstado || filtroTipo ? 'No se encontraron pagos con los filtros aplicados' : 'No hay pagos registrados'}
+                    {searchQuery || filtroEstado || filtroTipo || filtroCondominioId ? 'No se encontraron pagos con los filtros aplicados' : 'No hay pagos registrados'}
                   </td>
                 </tr>
               ) : (

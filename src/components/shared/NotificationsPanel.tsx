@@ -30,6 +30,8 @@ interface NotificationsPanelProps {
   onClose: () => void;
   loading: boolean;
   onRefresh: () => void;
+  userId?: number | null;
+  onBorrarHistorial?: () => void;
 }
 
 export const NotificationsPanel = ({
@@ -41,9 +43,12 @@ export const NotificationsPanel = ({
   onEliminarTodasLeidas,
   onClose,
   loading,
-  onRefresh
+  onRefresh,
+  userId,
+  onBorrarHistorial
 }: NotificationsPanelProps) => {
   const [activeTab, setActiveTab] = useState<'nuevas' | 'historial'>('nuevas');
+  const [showBorrarHistorialModal, setShowBorrarHistorialModal] = useState(false);
 
   // Separar notificaciones leídas y no leídas
   const notificacionesLeidas = notificaciones.filter(n => n.leida);
@@ -256,13 +261,22 @@ export const NotificationsPanel = ({
       </div>
 
       {/* Footer */}
-      <div className="p-3 border-t border-gray-200 bg-gray-50 rounded-b-lg flex items-center justify-between">
+      <div className="p-3 border-t border-gray-200 bg-gray-50 rounded-b-lg flex flex-wrap items-center justify-between gap-2">
         <button
           onClick={onRefresh}
           className="text-xs text-gray-600 hover:text-gray-800 transition-colors"
         >
           Actualizar
         </button>
+        {userId != null && onBorrarHistorial && (
+          <button
+            type="button"
+            onClick={() => setShowBorrarHistorialModal(true)}
+            className="text-xs text-gray-600 hover:text-gray-800 transition-colors underline"
+          >
+            Borrar historial
+          </button>
+        )}
         {activeTab === 'historial' && notificacionesLeidas.length > 0 && (
           <button
             onClick={() => {
@@ -288,6 +302,63 @@ export const NotificationsPanel = ({
           </button>
         )}
       </div>
+
+      {/* Modal Borrar historial de notificaciones */}
+      {showBorrarHistorialModal && userId != null && onBorrarHistorial && (
+        <div className="absolute inset-0 bg-black bg-opacity-40 rounded-lg flex items-center justify-center z-10 p-4">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.9 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="bg-white rounded-lg shadow-xl max-w-sm w-full p-4 border border-gray-200"
+          >
+            <h3 className="text-sm font-bold text-gray-900 mb-2">Borrar historial</h3>
+            <p className="text-xs text-gray-600 mb-3">
+              Mostrar solo notificaciones desde la fecha elegida. Las anteriores quedarán ocultas (no se eliminan).
+            </p>
+            <div className="space-y-1">
+              {[
+                { label: 'Todo (mostrar todo)', days: undefined as number | undefined },
+                { label: 'Últimos 7 días', days: 7 },
+                { label: 'Últimos 30 días', days: 30 },
+                { label: 'Último año', days: 365 },
+                { label: 'Reiniciar (solo desde hoy)', days: 0 },
+              ].map((opt) => (
+                <button
+                  key={opt.label}
+                  type="button"
+                  onClick={() => {
+                    if (typeof window === 'undefined') return;
+                    if (opt.days === undefined) {
+                      localStorage.removeItem(`notificaciones_cutoff_${userId}`);
+                    } else {
+                      const d = new Date();
+                      if (opt.days === 0) {
+                        d.setDate(d.getDate() + 1);
+                        d.setHours(0, 0, 0, 0);
+                      } else {
+                        d.setDate(d.getDate() - opt.days);
+                      }
+                      localStorage.setItem(`notificaciones_cutoff_${userId}`, d.toISOString());
+                    }
+                    onBorrarHistorial();
+                    setShowBorrarHistorialModal(false);
+                  }}
+                  className="w-full text-left px-3 py-2 rounded border border-gray-200 hover:bg-gray-50 text-xs font-medium text-gray-800"
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowBorrarHistorialModal(false)}
+              className="mt-3 w-full px-3 py-1.5 bg-gray-200 text-gray-700 rounded text-xs font-medium hover:bg-gray-300"
+            >
+              Cancelar
+            </button>
+          </motion.div>
+        </div>
+      )}
     </motion.div>
   );
 };

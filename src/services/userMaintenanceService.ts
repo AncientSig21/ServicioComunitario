@@ -29,7 +29,7 @@ export const corregirEstadosUsuarios = async (): Promise<{
     // 1. Obtener todos los usuarios (excepto administradores)
     const { data: usuarios, error: usuariosError } = await supabase
       .from('usuarios')
-      .select('id, nombre, estado, rol')
+      .select('id, nombre, Estado, rol')
       .neq('rol', 'admin')
       .neq('rol', 'Administrador');
 
@@ -62,14 +62,14 @@ export const corregirEstadosUsuarios = async (): Promise<{
         // Si tiene pagos vencidos, debe ser 'Moroso'
         // Si no tiene pagos vencidos, debe ser 'Activo' (aunque tenga pagos pendientes, aún no son deudas)
         const estadoCorrecto = (pagosVencidos && pagosVencidos.length > 0) ? 'Moroso' : 'Activo';
-        const estadoAnterior = usuario.estado || 'Activo';
+        const estadoAnterior = usuario.Estado ?? usuario.estado ?? 'Activo';
 
-        // Solo actualizar si el estado es diferente
+        // Solo actualizar si el estado es diferente (columna en BD: Estado con mayúscula)
         if (estadoAnterior !== estadoCorrecto) {
           const { error: updateError } = await supabase
             .from('usuarios')
             .update({ 
-              estado: estadoCorrecto,
+              Estado: estadoCorrecto,
               updated_at: new Date().toISOString()
             })
             .eq('id', usuario.id);

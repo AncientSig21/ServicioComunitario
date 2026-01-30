@@ -27,8 +27,24 @@ export const RootLayout = () => {
 	// Nota: Ya no bloqueamos la aplicación si Supabase no está configurado
 	// Ahora funciona en modo simulado usando localStorage
 
-	// Si el usuario está autenticado y es moroso, mostrar bloqueo
+	// Si el usuario está autenticado y es moroso: solo permitir acceso a /pagos para enviar comprobante
 	if (user && isUserMoroso()) {
+		if (pathname === '/pagos') {
+			return (
+				<ToastProvider>
+					<ReservationProvider>
+						<div className='h-screen flex flex-col font-montserrat bg-white'>
+							<Navbar />
+							<main className='flex-1 px-4 sm:px-6 lg:px-8 max-w-7xl mx-auto my-8 bg-white'>
+								<Outlet />
+							</main>
+							<Footer />
+							<ScrollToTop />
+						</div>
+					</ReservationProvider>
+				</ToastProvider>
+			);
+		}
 		return <MorosoBlock user={user} />;
 	}
 

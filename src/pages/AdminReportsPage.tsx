@@ -69,7 +69,7 @@ const AdminReportsPage = () => {
 
     // Generar reportes de morosidad
     usuarios.forEach((usuario: any) => {
-      if (usuario.estado === 'Moroso') {
+      if ((usuario.Estado ?? usuario.estado) === 'Moroso') {
         nuevosReportes.push({
           id: reporteId++,
           tipo: 'morosidad',
@@ -87,7 +87,7 @@ const AdminReportsPage = () => {
 
     // Generar reportes de cambio de estado
     usuarios.forEach((usuario: any) => {
-      if (usuario.estado === 'Moroso') {
+      if ((usuario.Estado ?? usuario.estado) === 'Moroso') {
         nuevosReportes.push({
           id: reporteId++,
           tipo: 'cambio_estado',
@@ -95,7 +95,7 @@ const AdminReportsPage = () => {
           residente_nombre: usuario.nombre,
           residente_correo: usuario.correo,
           residente_apartamento: usuario.numeroApartamento,
-          descripcion: `Cambio de estado a: ${usuario.estado}`,
+          descripcion: `Cambio de estado a: ${usuario.Estado ?? usuario.estado}`,
           fecha: new Date().toISOString(),
           estado: 'completado',
         });
@@ -150,10 +150,10 @@ const AdminReportsPage = () => {
   const resolverMorosidad = (reporteId: number, residenteId: number) => {
     const db = getMockDatabase();
     
-    // Cambiar estado del residente a Activo
+    // Cambiar estado del residente a Activo (columna en BD: Estado con mayúscula)
     const usuarioIndex = db.usuarios.findIndex((u: any) => u.id === residenteId);
     if (usuarioIndex !== -1) {
-      db.usuarios[usuarioIndex].estado = 'Activo';
+      db.usuarios[usuarioIndex].Estado = 'Activo';
     }
     
     // Marcar reporte como completado

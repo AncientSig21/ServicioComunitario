@@ -70,6 +70,7 @@ export const MantenimientoPage = () => {
   const [formData, setFormData] = useState({
     titulo: '',
     descripcion: '',
+    tipo: 'mantenimiento' as 'mantenimiento' | 'servicio',
     prioridad: 'media' as 'baja' | 'media' | 'alta' | 'urgente',
     ubicacion: '',
   });
@@ -141,12 +142,13 @@ export const MantenimientoPage = () => {
         usuario_solicitante_id: user.id,
         titulo: formData.titulo.trim(),
         descripcion: formData.descripcion.trim(),
+        tipo: formData.tipo,
         prioridad: formData.prioridad,
         ubicacion: formData.ubicacion.trim() || undefined,
       });
 
-      alert('✅ Solicitud de mantenimiento creada exitosamente. El administrador la revisará.');
-      setFormData({ titulo: '', descripcion: '', prioridad: 'media', ubicacion: '' });
+      alert('✅ Solicitud creada exitosamente. El administrador la revisará.');
+      setFormData({ titulo: '', descripcion: '', tipo: 'mantenimiento', prioridad: 'media', ubicacion: '' });
       setShowCreateModal(false);
       
       // Recargar solicitudes
@@ -174,10 +176,10 @@ export const MantenimientoPage = () => {
           <BackToHome />
           <div className="mt-6">
             <h1 className="text-3xl sm:text-4xl font-bold text-gray-900 mb-2">
-              🔧 Mantenimiento y Reparaciones
+              🔧 Mantenimiento y Servicios
             </h1>
             <p className="text-gray-600 text-base sm:text-lg">
-              Consulta el estado de las solicitudes de mantenimiento y reparaciones del condominio
+              Consulta el estado de las solicitudes de mantenimiento y servicios del condominio (pendientes, completadas, canceladas o rechazadas)
             </p>
           </div>
         </div>
@@ -298,9 +300,13 @@ export const MantenimientoPage = () => {
                   </div>
                   <button
                     onClick={() => handleVerAvances(solicitud)}
-                    className="mt-2 sm:mt-0 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium text-sm"
+                    className="mt-2 sm:mt-0 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium text-sm flex items-center gap-2"
+                    title="Ver avances e imágenes de progreso del mantenimiento"
                   >
-                    Ver Avances
+                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                    </svg>
+                    Ver avances y fotos
                   </button>
                 </div>
               </motion.div>
@@ -314,7 +320,7 @@ export const MantenimientoPage = () => {
             💡 ¿Necesitas reportar un problema?
           </h3>
           <p className="text-blue-800 text-sm">
-            Si encuentras algún problema que requiera mantenimiento o reparación, puedes crear una solicitud
+            Si encuentras algún problema que requiera mantenimiento o servicios, puedes crear una solicitud
             usando el botón "Nueva Solicitud" de arriba o contactar a la administración directamente.
           </p>
         </div>
@@ -345,12 +351,12 @@ export const MantenimientoPage = () => {
             <div className="p-6">
               <div className="flex justify-between items-center mb-6">
                 <h2 className="text-2xl font-bold text-gray-900">
-                  Nueva Solicitud de Mantenimiento
+                  Nueva solicitud (mantenimiento o servicio)
                 </h2>
                 <button
                   onClick={() => {
                     setShowCreateModal(false);
-                    setFormData({ titulo: '', descripcion: '', prioridad: 'media', ubicacion: '' });
+                    setFormData({ titulo: '', descripcion: '', tipo: 'mantenimiento', prioridad: 'media', ubicacion: '' });
                     setError(null);
                   }}
                   className="text-gray-400 hover:text-gray-600 text-2xl"
@@ -360,6 +366,19 @@ export const MantenimientoPage = () => {
               </div>
 
               <form onSubmit={handleCrearSolicitud} className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Tipo de la solicitud <span className="text-red-500">*</span>
+                  </label>
+                  <select
+                    value={formData.tipo}
+                    onChange={(e) => setFormData({ ...formData, tipo: e.target.value as 'mantenimiento' | 'servicio' })}
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  >
+                    <option value="mantenimiento">Mantenimiento</option>
+                    <option value="servicio">Servicio</option>
+                  </select>
+                </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
                     Título <span className="text-red-500">*</span>
@@ -383,7 +402,7 @@ export const MantenimientoPage = () => {
                     onChange={(e) => setFormData({ ...formData, descripcion: e.target.value })}
                     className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                     rows={5}
-                    placeholder="Describe el problema o la necesidad de mantenimiento..."
+                    placeholder="Describe el problema o la necesidad (mantenimiento o servicio)..."
                     required
                   />
                 </div>
@@ -430,7 +449,7 @@ export const MantenimientoPage = () => {
                     type="button"
                     onClick={() => {
                       setShowCreateModal(false);
-                      setFormData({ titulo: '', descripcion: '', prioridad: 'media', ubicacion: '' });
+                      setFormData({ titulo: '', descripcion: '', tipo: 'mantenimiento', prioridad: 'media', ubicacion: '' });
                       setError(null);
                     }}
                     className="px-4 py-2 text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"

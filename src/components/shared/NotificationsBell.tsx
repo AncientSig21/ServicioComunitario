@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { FaBell } from 'react-icons/fa';
 import { useAuth } from '../../hooks/useAuth';
 import { fetchNotificacionesUsuario, marcarNotificacionLeida, eliminarNotificacion, eliminarNotificacionesLeidas } from '../../services/bookService';
@@ -29,7 +29,24 @@ export const NotificationsBell = () => {
   const [notificacionesNoLeidas, setNotificacionesNoLeidas] = useState<Notificacion[]>([]);
   const [showPanel, setShowPanel] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [cutoffKey, setCutoffKey] = useState(0);
   const panelRef = useRef<HTMLDivElement>(null);
+
+  const cutoff = useMemo(() => {
+    if (!user?.id || typeof window === 'undefined') return null;
+    return localStorage.getItem(`notificaciones_cutoff_${user.id}`);
+  }, [user?.id, cutoffKey]);
+
+  const notificacionesFiltradas = useMemo(() => {
+    if (!cutoff) return notificaciones;
+    const c = new Date(cutoff);
+    return notificaciones.filter((n) => new Date(n.fecha_creacion || n.created_at || 0) >= c);
+  }, [notificaciones, cutoff]);
+
+  const notificacionesNoLeidasFiltradas = useMemo(
+    () => notificacionesFiltradas.filter((n) => !n.leida),
+    [notificacionesFiltradas]
+  );
 
   // Cargar notificaciones
   const cargarNotificaciones = async () => {
@@ -122,7 +139,7 @@ export const NotificationsBell = () => {
 
   if (!user) return null;
 
-  const countNoLeidas = notificacionesNoLeidas.length;
+  const countNoLeidas = notificacionesNoLeidasFiltradas.length;
 
   return (
     <div className="relative" ref={panelRef}>
@@ -146,8 +163,8 @@ export const NotificationsBell = () => {
       <AnimatePresence>
         {showPanel && (
           <NotificationsPanel
-            notificaciones={notificaciones}
-            notificacionesNoLeidas={notificacionesNoLeidas}
+            notificaciones={notificacionesFiltradas}
+            notificacionesNoLeidas={notificacionesNoLeidasFiltradas}
             onMarcarLeida={handleMarcarLeida}
             onMarcarTodasLeidas={handleMarcarTodasLeidas}
             onEliminarNotificacion={handleEliminarNotificacion}
@@ -155,6 +172,8 @@ export const NotificationsBell = () => {
             onClose={() => setShowPanel(false)}
             loading={loading}
             onRefresh={cargarNotificaciones}
+            userId={user?.id ?? null}
+            onBorrarHistorial={() => setCutoffKey((k) => k + 1)}
           />
         )}
       </AnimatePresence>

@@ -104,10 +104,17 @@ export default function AdminLayout() {
       }
 
       // Si no hay usuario, esperar o redirigir
-      if (!user || !user.id) {
+      const userId = user?.id;
+      if (!user || !userId) {
         if (!authLoading) {
           navigate('/login');
         }
+        return;
+      }
+
+      // Si ya verificamos que es admin para este usuario, no volver a consultar la BD
+      if (isAdmin === true) {
+        setCheckingRole(false);
         return;
       }
 
@@ -119,7 +126,7 @@ export default function AdminLayout() {
         const { data: usuario, error } = await supabase
           .from('usuarios')
           .select('id, rol')
-          .eq('id', user.id)
+          .eq('id', userId)
           .single();
 
         if (error) {
@@ -157,7 +164,8 @@ export default function AdminLayout() {
     };
 
     verifyAdminRole();
-  }, [user, isAuthenticated, authLoading, navigate, showError]);
+    // Solo re-verificar cuando cambie el id del usuario (no cuando cambie el objeto user por refreshUserStatus)
+  }, [user?.id, isAuthenticated, authLoading, isAdmin, navigate, showError]);
 
   // Mostrar loading mientras se verifica
   if (authLoading || checkingRole || isAdmin === null) {
