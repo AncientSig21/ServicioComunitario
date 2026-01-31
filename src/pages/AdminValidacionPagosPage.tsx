@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react';
-import { fetchPagos, fetchPagoById, validarPago, crearNotificacion, fetchSolicitudesMantenimiento, actualizarEstadoSolicitud, fetchEspaciosPendientes, validarEspacioComun, eliminarEspacioComun, parsearExcedenteDeObservaciones } from '../services/bookService';
+import { useEffect, useState, useRef } from 'react';
+import { fetchPagos, fetchPagoById, validarPago, crearNotificacion, fetchSolicitudesMantenimiento, actualizarEstadoSolicitud, fetchEspaciosPendientes, validarEspacioComun, eliminarEspacioComun, parsearExcedenteDeObservaciones, getTasaParaPagos, getMontoDisplay, formatMontoUsd, obtenerUrlComprobanteParaVisualizar } from '../services/bookService';
+import { fetchTasaEnTiempoReal } from '../services/exchangeRateService';
 import { useAuth } from '../hooks/useAuth';
 import { Pagination } from '../components/shared/Pagination';
 import { FaCheck, FaTimes, FaEye, FaDollarSign, FaCalendarAlt, FaTools, FaBuilding } from 'react-icons/fa';
@@ -11,6 +12,7 @@ interface Pago {
   vivienda_id: number | null;
   concepto: string;
   monto: number;
+  monto_usd?: number | null;
   abono?: number; // Campo real en la BD
   monto_pagado?: number; // Alias para compatibilidad
   tipo: string;
@@ -114,13 +116,15 @@ const AdminValidacionPagosPage = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [filtroEstado, setFiltroEstado] = useState<string>('pendiente');
 
+  const [tasaValidacion, setTasaValidacion] = useState<number>(0);
   const [formValidacion, setFormValidacion] = useState({
     nuevo_estado: 'pagado' as string,
-    monto_aprobado: '',
     metodo_pago: '',
     referencia: '',
     observaciones: '',
   });
+  const [comprobanteDisplayUrl, setComprobanteDisplayUrl] = useState<string | null>(null);
+  const comprobanteBlobUrlRef = useRef<string | null>(null);
 
   const cargarEventos = () => {
     try {
@@ -145,14 +149,24 @@ const AdminValidacionPagosPage = () => {
     }
   };
 
+  const abortPagosRef = useRef(false);
+  useEffect(() => {
+    abortPagosRef.current = false;
+    if (user?.id) {
+      cargarPagos(abortPagosRef);
+    }
+    return () => {
+      abortPagosRef.current = true;
+    };
+  }, [user?.id, filtroEstado]);
+
   useEffect(() => {
     if (user?.id) {
-      cargarPagos();
       cargarEventos();
       cargarSolicitudes();
       cargarEspacios();
     }
-  }, [user]);
+  }, [user?.id]);
 
   useEffect(() => {
     if (activeTab === 'eventos') {
@@ -164,13 +178,57 @@ const AdminValidacionPagosPage = () => {
     }
   }, [activeTab]);
 
-  const cargarPagos = async () => {
+  // Resolver URL del comprobante para que el admin pueda verlo (URL firmada para storage privado; blob para data: base64 y evitar "entity too large")
+  useEffect(() => {
+    const url = pagoSeleccionado?.archivos?.url;
+    if (comprobanteBlobUrlRef.current) {
+      URL.revokeObjectURL(comprobanteBlobUrlRef.current);
+      comprobanteBlobUrlRef.current = null;
+    }
+    if (!url) {
+      setComprobanteDisplayUrl(null);
+      return;
+    }
+    if (url.startsWith('data:')) {
+      try {
+        const base64 = url.split(',')[1];
+        if (base64) {
+          const binary = atob(base64);
+          const bytes = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+          const mime = (url.match(/^data:([^;]+);/)?.[1]) || 'application/pdf';
+          const blob = new Blob([bytes], { type: mime });
+          const blobUrl = URL.createObjectURL(blob);
+          comprobanteBlobUrlRef.current = blobUrl;
+          setComprobanteDisplayUrl(blobUrl);
+        } else {
+          setComprobanteDisplayUrl(url);
+        }
+      } catch {
+        setComprobanteDisplayUrl(url);
+      }
+      return;
+    }
+    let cancelled = false;
+    obtenerUrlComprobanteParaVisualizar(url).then((resolved) => {
+      if (!cancelled) setComprobanteDisplayUrl(resolved);
+    });
+    return () => { cancelled = true; setComprobanteDisplayUrl(null); };
+  }, [pagoSeleccionado?.id, pagoSeleccionado?.archivos?.url]);
+
+  const cargarPagos = async (abortRef?: React.MutableRefObject<boolean>) => {
+    const ref = abortRef ?? { current: false };
     try {
       setLoading(true);
       setError(null);
-      
-      const pagosData = await fetchPagos({ estado: filtroEstado as any });
-      
+
+      const [pagosData, tasa] = await Promise.all([
+        fetchPagos({ estado: filtroEstado as any }),
+        fetchTasaEnTiempoReal({ guardarEnBD: false }).then(r => r.tasa).catch(() => getTasaParaPagos()),
+      ]);
+      if (ref.current) return;
+      setTasaValidacion(tasa);
+
       const pagosUsuarios = (pagosData || []).filter((pago: any) => {
         const observaciones = pago.observaciones?.toLowerCase() || '';
         const concepto = pago.concepto?.toLowerCase() || '';
@@ -203,19 +261,18 @@ const AdminValidacionPagosPage = () => {
           monto_pagado: abono
         };
       });
-      
+
+      if (ref.current) return;
       setPagos(pagosUsuarios);
     } catch (err: any) {
-      console.error('Error cargando pagos:', err);
-      setError(err.message || 'Error al cargar los pagos');
+      if (!ref.current) {
+        console.error('Error cargando pagos:', err);
+        setError(err.message || 'Error al cargar los pagos');
+      }
     } finally {
-      setLoading(false);
+      if (!ref.current) setLoading(false);
     }
   };
-
-  useEffect(() => {
-    cargarPagos();
-  }, [filtroEstado]);
 
   const pagosFiltrados = pagos.filter(pago => {
     if (searchQuery) {
@@ -461,7 +518,7 @@ const AdminValidacionPagosPage = () => {
   };
 
   const handleAbrirModalValidacion = async (pago: Pago) => {
-    // Refrescar el pago desde la BD para tener el abono actual (ej. si el usuario usó abono al enviar comprobante)
+    // Refrescar el pago desde la BD para tener el abono actual (monto que el usuario registró)
     const pagoActual = await fetchPagoById(pago.id);
     const pagoParaUsar = pagoActual
       ? { ...pago, ...pagoActual, abono: pagoActual.abono ?? pago.abono, monto_pagado: pagoActual.abono ?? pago.monto_pagado }
@@ -470,13 +527,10 @@ const AdminValidacionPagosPage = () => {
     const montoActual = pagoParaUsar.abono !== undefined && pagoParaUsar.abono !== null
       ? Number(pagoParaUsar.abono)
       : (Number((pagoParaUsar as any).monto_pagado) || 0);
-    const montoTotal = Number(pagoParaUsar.monto);
-    const montoRestante = montoTotal - montoActual;
-    // Monto a aprobar = solo lo que falta. Si el usuario ya pagó todo con abono, debe ser 0 (no duplicar a 200).
-    const montoAprobar = montoRestante > 0 ? montoRestante : 0;
+    const montoTotal = getMontoDisplay(pagoParaUsar, tasaValidacion);
+    const estaCompleto = montoTotal <= 0 || montoActual >= montoTotal;
     setFormValidacion({
-      nuevo_estado: montoRestante > 0 ? 'pendiente' : 'pagado',
-      monto_aprobado: montoAprobar.toString(),
+      nuevo_estado: estaCompleto ? 'pagado' : 'pendiente',
       metodo_pago: pagoParaUsar.metodo_pago || '',
       referencia: pagoParaUsar.referencia || '',
       observaciones: '',
@@ -487,26 +541,10 @@ const AdminValidacionPagosPage = () => {
   const handleValidarPago = async () => {
     if (!user?.id || !pagoSeleccionado) return;
 
-    const montoAprobado = parseFloat(formValidacion.monto_aprobado || '0');
-    const montoPendiente = pagoSeleccionado.monto - (pagoSeleccionado.abono ?? pagoSeleccionado.monto_pagado ?? 0);
-    // Si aún hay pendiente por aprobar, el monto aprobado debe ser > 0; si ya está todo pagado, puede ser 0 (solo confirmar)
-    if (montoPendiente > 0 && montoAprobado <= 0) {
-      alert('El monto aprobado debe ser mayor a 0 cuando hay saldo pendiente');
-      return;
-    }
-
-    const montoActual = pagoSeleccionado.abono !== undefined && pagoSeleccionado.abono !== null 
-      ? pagoSeleccionado.abono 
-      : (pagoSeleccionado.monto_pagado || 0);
-    const montoTotal = pagoSeleccionado.monto;
-    const nuevoAbono = montoActual + montoAprobado;
-
-    let estadoFinal: string;
-    if (nuevoAbono >= montoTotal) {
-      estadoFinal = 'pagado';
-    } else {
-      estadoFinal = 'pendiente';
-    }
+    const montoTotalVal = getMontoDisplay(pagoSeleccionado, tasaValidacion);
+    const montoActualVal = pagoSeleccionado.abono !== undefined && pagoSeleccionado.abono !== null ? pagoSeleccionado.abono : (pagoSeleccionado.monto_pagado || 0);
+    const estaCompleto = montoTotalVal <= 0 || montoActualVal >= montoTotalVal;
+    const estadoFinal = estaCompleto ? 'pagado' : 'pendiente';
 
     try {
       setLoading(true);
@@ -514,25 +552,21 @@ const AdminValidacionPagosPage = () => {
         pago_id: pagoSeleccionado.id,
         admin_id: user.id,
         nuevo_estado: estadoFinal as any,
-        monto_aprobado: montoAprobado,
         metodo_pago: formValidacion.metodo_pago || undefined,
         referencia: formValidacion.referencia || undefined,
         observaciones: formValidacion.observaciones || undefined,
       });
 
       if (estadoFinal === 'pagado') {
-        alert(`✅ Pago completado exitosamente. Total pagado: ${formatMonto(nuevoAbono)}`);
+        alert(`✅ Pago validado correctamente. Monto pagado por el residente: ${formatMonto(montoActualVal)}`);
       } else {
-        alert(`✅ Abono de ${formatMonto(montoAprobado)} registrado exitosamente. ` +
-              `Total pagado: ${formatMonto(nuevoAbono)} de ${formatMonto(montoTotal)}. ` +
-              `Pendiente: ${formatMonto(montoTotal - nuevoAbono)}`);
+        alert(`✅ Pago parcial validado. Monto registrado por el residente: ${formatMonto(montoActualVal)} de ${formatMonto(montoTotalVal)}.`);
       }
-      
+
       setShowValidationModal(false);
       setPagoSeleccionado(null);
       setFormValidacion({
         nuevo_estado: 'pagado',
-        monto_aprobado: '',
         metodo_pago: '',
         referencia: '',
         observaciones: '',
@@ -735,11 +769,26 @@ const AdminValidacionPagosPage = () => {
   };
 
   const calcularMontoPendiente = (pago: Pago) => {
-    const montoTotal = pago.monto;
+    const montoTotal = getMontoDisplay(pago, tasaValidacion);
     const montoPagado = pago.abono !== undefined && pago.abono !== null 
       ? pago.abono 
       : (pago.monto_pagado || 0);
     return montoTotal - montoPagado;
+  };
+
+  /** Monto total de referencia: para Restante usa el original del admin (observaciones); si no, equivalente actual en Bs (y USD si aplica). */
+  const getMontoTotalReferencia = (pago: Pago): { totalBs: number; totalUsd?: number } => {
+    const obs = pago.observaciones || '';
+    const esRestante = (pago.concepto || '').includes('Restante');
+    const match = obs.match(/Monto total original:\s*([\d.,]+)\s*Bs(?:\s*\(([\d.,]+)\s*USD\))?/i);
+    if (esRestante && match) {
+      const totalBs = parseFloat(match[1].replace(',', '.'));
+      const totalUsd = match[2] ? parseFloat(match[2].replace(',', '.')) : undefined;
+      return { totalBs, totalUsd };
+    }
+    const totalBs = getMontoDisplay(pago, tasaValidacion);
+    const totalUsd = (pago.monto_usd != null && pago.monto_usd > 0) ? pago.monto_usd : undefined;
+    return { totalBs, totalUsd };
   };
   
   const obtenerMontoPagado = (pago: Pago) => {
@@ -921,7 +970,7 @@ const AdminValidacionPagosPage = () => {
                 currentPagos.map((pago) => {
                   const montoPendiente = calcularMontoPendiente(pago);
                   const montoPagado = obtenerMontoPagado(pago);
-                  
+                  const { totalBs, totalUsd } = getMontoTotalReferencia(pago);
                   return (
                     <tr key={pago.id} className="hover:bg-gray-50">
                       <td className="px-4 py-3 text-sm text-gray-900">
@@ -932,7 +981,12 @@ const AdminValidacionPagosPage = () => {
                       </td>
                       <td className="px-4 py-3 text-sm text-gray-900">{pago.viviendas?.numero_apartamento || 'N/A'}</td>
                       <td className="px-4 py-3 text-sm text-gray-900 font-medium">{pago.concepto}</td>
-                      <td className="px-4 py-3 text-sm text-gray-900 font-semibold">{formatMonto(pago.monto)}</td>
+                      <td className="px-4 py-3 text-sm text-gray-900 font-semibold">
+                        {formatMonto(totalBs)}
+                        {totalUsd != null && totalUsd > 0 && (
+                          <span className="text-indigo-600 font-normal ml-1">({formatMontoUsd(totalUsd)})</span>
+                        )}
+                      </td>
                       <td className="px-4 py-3 text-sm text-green-600 font-semibold">
                         {montoPagado > 0 ? formatMonto(montoPagado) : '-'}
                       </td>
@@ -1353,18 +1407,21 @@ const AdminValidacionPagosPage = () => {
                 )}
               </div>
 
-              {/* Excedente / Abono a favor: visible para el administrador al validar */}
+              {/* Excedente: pago completo con excedente; visible para el administrador al validar */}
               {(() => {
-                const excedente = parsearExcedenteDeObservaciones(pagoSeleccionado.observaciones);
+                const excedenteDb = (pagoSeleccionado as { excedente?: number | null }).excedente;
+                const excedente = (excedenteDb != null && excedenteDb > 0)
+                  ? excedenteDb
+                  : parsearExcedenteDeObservaciones(pagoSeleccionado.observaciones);
                 if (excedente <= 0) return null;
                 return (
                   <div className="bg-blue-50 border border-blue-300 rounded-lg p-4 mb-4">
                     <h3 className="text-sm font-semibold text-blue-900 mb-2 flex items-center gap-2">
-                      <span>💰</span> Excedente / Abono a favor
+                      <span>💰</span> Pago completo con excedente
                     </h3>
                     <p className="text-lg font-bold text-blue-700">{formatMonto(excedente)}</p>
                     <p className="text-sm text-blue-800 mt-1">
-                      El usuario pagó por encima del monto de esta cuota. Al aprobar este pago, este monto se registrará como abono y se descontará automáticamente de su próxima cuota pendiente o del próximo pago que se le cree.
+                      El usuario pagó por encima del monto de esta cuota. Este excedente queda registrado solo en este pago (no se aplica a otras cuotas). Al aprobar, el pago se marcará como completo con excedente.
                     </p>
                   </div>
                 );
@@ -1405,7 +1462,12 @@ const AdminValidacionPagosPage = () => {
                   </div>
                   <div>
                     <p className="text-sm text-gray-600 mb-1">Monto Total:</p>
-                    <p className="text-xl font-bold text-blue-600">{formatMonto(pagoSeleccionado.monto)}</p>
+                    <p className="text-xl font-bold text-blue-600">
+                      {formatMonto(getMontoDisplay(pagoSeleccionado, tasaValidacion))}
+                      {pagoSeleccionado.monto_usd != null && pagoSeleccionado.monto_usd > 0 && (
+                        <span className="text-indigo-600 font-semibold ml-1.5">({formatMontoUsd(pagoSeleccionado.monto_usd)})</span>
+                      )}
+                    </p>
                   </div>
                   {(() => {
                     const montoPagado = obtenerMontoPagado(pagoSeleccionado);
@@ -1425,49 +1487,14 @@ const AdminValidacionPagosPage = () => {
                 </div>
               </div>
 
-              {/* Aviso cuando el usuario ya pagó con abono: total de la cuota es el monto mostrado, no se suma de nuevo */}
-              {calcularMontoPendiente(pagoSeleccionado) <= 0 && obtenerMontoPagado(pagoSeleccionado) > 0 && (
-                <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-4">
-                  <p className="text-sm text-amber-800">
-                    <strong>Pago ya cubierto (abono/comprobante).</strong> El monto total de esta cuota es {formatMonto(pagoSeleccionado.monto)}. El usuario ya aplicó su abono; no ingrese un monto adicional. Solo confirme la aprobación con 0.
-                  </p>
-                </div>
-              )}
+              {/* El administrador solo verifica que el pago coincida; no ingresa monto. El monto mostrado es el que el residente registró. */}
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-4">
+                <p className="text-sm text-blue-800">
+                  <strong>Verificación:</strong> Confirme que el comprobante y el monto pagado por el residente son correctos. No existe campo de monto a aprobar; el monto que aparece es el registrado por el usuario y no se sobrescribe.
+                </p>
+              </div>
 
               <div className="space-y-4">
-                {/* Monto aprobado */}
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Monto a Aprobar *
-                  </label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    max={calcularMontoPendiente(pagoSeleccionado)}
-                    value={formValidacion.monto_aprobado}
-                    onChange={(e) => {
-                      const valor = e.target.value;
-                      const montoPendiente = calcularMontoPendiente(pagoSeleccionado);
-                      if (parseFloat(valor) > montoPendiente) {
-                        alert(`El monto no puede ser mayor a ${formatMonto(montoPendiente)}`);
-                        return;
-                      }
-                      setFormValidacion({ 
-                        ...formValidacion, 
-                        monto_aprobado: valor,
-                        nuevo_estado: parseFloat(valor) >= montoPendiente ? 'pagado' : 'parcial'
-                      });
-                    }}
-                    className="w-full bg-white text-gray-900 border border-gray-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                    placeholder="0.00"
-                    required
-                  />
-                  <p className="text-xs text-gray-500 mt-1">
-                    Máximo disponible: {formatMonto(calcularMontoPendiente(pagoSeleccionado))}
-                  </p>
-                </div>
-
                 {/* Método de pago */}
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -1515,43 +1542,28 @@ const AdminValidacionPagosPage = () => {
                   />
                 </div>
 
-                {/* Resumen de cálculo */}
+                {/* Resumen: solo monto total de la cuota y monto pagado por el residente (no se edita) */}
                 <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
                   <h3 className="text-sm font-semibold text-gray-700 mb-2">Resumen del Pago:</h3>
                   <div className="space-y-1 text-sm">
                     <div className="flex justify-between">
-                      <span className="text-gray-600">Monto Total:</span>
-                      <span className="font-semibold text-gray-900">{formatMonto(pagoSeleccionado.monto)}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-600">Ya Pagado:</span>
-                      <span className="font-semibold text-green-600">{formatMonto(obtenerMontoPagado(pagoSeleccionado))}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-600">Monto a Aprobar:</span>
-                      <span className="font-semibold text-blue-600">
-                        {formValidacion.monto_aprobado ? formatMonto(parseFloat(formValidacion.monto_aprobado)) : formatMonto(0)}
+                      <span className="text-gray-600">Monto Total de la cuota:</span>
+                      <span className="font-semibold text-gray-900">
+                        {formatMonto(getMontoDisplay(pagoSeleccionado, tasaValidacion))}
+                        {pagoSeleccionado.monto_usd != null && pagoSeleccionado.monto_usd > 0 && (
+                          <span className="text-indigo-600 ml-1">({formatMontoUsd(pagoSeleccionado.monto_usd)})</span>
+                        )}
                       </span>
                     </div>
-                    <div className="border-t border-gray-300 pt-1 mt-1">
-                      <div className="flex justify-between">
-                        <span className="text-gray-700 font-semibold">Total Pagado (después):</span>
-                        <span className="font-bold text-green-600">
-                          {formatMonto(obtenerMontoPagado(pagoSeleccionado) + (parseFloat(formValidacion.monto_aprobado) || 0))}
-                        </span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-gray-700 font-semibold">Pendiente (después):</span>
-                        <span className="font-bold text-red-600">
-                          {formatMonto(calcularMontoPendiente(pagoSeleccionado) - (parseFloat(formValidacion.monto_aprobado) || 0))}
-                        </span>
-                      </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-600">Monto pagado por el residente:</span>
+                      <span className="font-semibold text-green-600">{formatMonto(obtenerMontoPagado(pagoSeleccionado))}</span>
                     </div>
-                    <div className="mt-2 pt-2 border-t border-gray-300">
+                    <div className="border-t border-gray-300 pt-1 mt-1">
                       <div className="flex justify-between items-center">
-                        <span className="text-gray-700 font-semibold">Estado Final:</span>
+                        <span className="text-gray-700 font-semibold">Estado al validar:</span>
                         <span className={`px-2 py-1 rounded text-xs ${getEstadoBadge(formValidacion.nuevo_estado)}`}>
-                          {formValidacion.nuevo_estado === 'parcial' ? 'Pago Parcial' : 'Pago Completo'}
+                          {formValidacion.nuevo_estado === 'pendiente' ? 'Pago Parcial' : 'Pago Completo'}
                         </span>
                       </div>
                     </div>
@@ -1562,11 +1574,11 @@ const AdminValidacionPagosPage = () => {
               <div className="flex gap-3 mt-6">
                 <button
                   onClick={handleValidarPago}
-                  disabled={loading || (parseFloat(formValidacion.monto_aprobado) < 0) || (parseFloat(formValidacion.monto_aprobado) <= 0 && pagoSeleccionado != null && calcularMontoPendiente(pagoSeleccionado) > 0)}
+                  disabled={loading}
                   className="flex-1 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                 >
                   <FaCheck />
-                  {loading ? 'Validando...' : formValidacion.nuevo_estado === 'parcial' ? 'Aprobar Pago Parcial' : 'Aprobar Pago Completo'}
+                  {loading ? 'Validando...' : formValidacion.nuevo_estado === 'pendiente' ? 'Verificar y aprobar (parcial)' : 'Verificar y aprobar'}
                 </button>
                 <button
                   onClick={() => {
@@ -1574,7 +1586,6 @@ const AdminValidacionPagosPage = () => {
                     setPagoSeleccionado(null);
                     setFormValidacion({
                       nuevo_estado: 'pagado',
-                      monto_aprobado: '',
                       metodo_pago: '',
                       referencia: '',
                       observaciones: '',
@@ -1909,7 +1920,12 @@ const AdminValidacionPagosPage = () => {
                   </div>
                   <div>
                     <p className="text-sm text-gray-600 mb-1">Monto Total:</p>
-                    <p className="text-xl font-bold text-blue-600">{formatMonto(pagoSeleccionado.monto)}</p>
+                    <p className="text-xl font-bold text-blue-600">
+                      {formatMonto(getMontoDisplay(pagoSeleccionado, tasaValidacion))}
+                      {pagoSeleccionado.monto_usd != null && pagoSeleccionado.monto_usd > 0 && (
+                        <span className="text-indigo-600 font-semibold ml-1.5">({formatMontoUsd(pagoSeleccionado.monto_usd)})</span>
+                      )}
+                    </p>
                   </div>
                   <div>
                     <p className="text-sm text-gray-600 mb-1">Estado:</p>
@@ -1954,14 +1970,18 @@ const AdminValidacionPagosPage = () => {
                 {pagoSeleccionado.archivos?.url && (
                   <div>
                     <p className="text-sm text-gray-600 mb-1">Comprobante:</p>
-                    <a
-                      href={pagoSeleccionado.archivos.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-blue-600 hover:underline"
-                    >
-                      Ver comprobante
-                    </a>
+                    {comprobanteDisplayUrl ? (
+                      <a
+                        href={comprobanteDisplayUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-blue-600 hover:underline"
+                      >
+                        Ver comprobante
+                      </a>
+                    ) : (
+                      <span className="text-gray-500 text-sm">Preparando comprobante...</span>
+                    )}
                   </div>
                 )}
               </div>

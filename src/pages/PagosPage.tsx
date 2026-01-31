@@ -4,15 +4,18 @@ import { BackToHome } from '../components/shared/BackToHome';
 import { ScrollToTop } from '../components/shared/ScrollToTop';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '../hooks/useAuth';
-import { solicitarPago, actualizarPagoConComprobante, obtenerViviendaUsuario, subirArchivoComprobante, fetchPagos, editarPago, crearNotificacion, obtenerAbonosDisponibles, crearPagoRestante, aplicarAbonoAPagoEspecifico } from '../services/bookService';
+import { solicitarPago, actualizarPagoConComprobante, obtenerViviendaUsuario, subirArchivoComprobante, fetchPagos, editarPago, crearNotificacion, obtenerAbonosDisponibles, obtenerTotalPagadoDesdePagos, obtenerTotalPagadoUsuario, crearPagoRestante, aplicarAbonoAPagoEspecifico, getTasaParaPagos, getMontoDisplay, formatMontoUsd } from '../services/bookService';
+import { fetchTasaEnTiempoReal } from '../services/exchangeRateService';
 import { supabase } from '../supabase/client';
 
 interface Pago {
   id: number;
   concepto: string;
   monto: number;
+  monto_usd?: number | null; // Si existe, el monto en Bs se calcula con la tasa actual
   monto_pagado?: number;
   abono?: number; // Campo real en la BD
+  excedente?: number; // Excedente del pago (cuando pagó de más); suma al total pagado
   fechaVencimiento: string;
   fechaPago?: string;
   estado: 'pendiente' | 'pagado' | 'vencido' | 'parcial' | 'rechazado';
@@ -28,67 +31,6 @@ interface Pago {
   numero_apartamento?: string;
   creado_por_admin?: boolean;
 }
-
-// Datos de ejemplo - en producción vendrían de Supabase
-const pagosEjemplo: Pago[] = [
-  {
-    id: 1,
-    concepto: 'Cuota de Mantenimiento - Enero 2025',
-    monto: 150.00,
-    fechaVencimiento: '2025-01-10',
-    fechaPago: '2025-01-08',
-    estado: 'pagado',
-    tipo: 'mantenimiento',
-    referencia: 'REF-2025-001',
-  },
-  {
-    id: 2,
-    concepto: 'Cuota de Mantenimiento - Febrero 2025',
-    monto: 150.00,
-    fechaVencimiento: '2025-02-10',
-    estado: 'pendiente',
-    tipo: 'mantenimiento',
-    referencia: 'REF-2025-002',
-  },
-  {
-    id: 3,
-    concepto: 'Servicios Comunes - Diciembre 2024',
-    monto: 45.50,
-    fechaVencimiento: '2024-12-15',
-    fechaPago: '2024-12-14',
-    estado: 'pagado',
-    tipo: 'servicios',
-    referencia: 'REF-2024-125',
-  },
-  {
-    id: 4,
-    concepto: 'Multa por Ruido Excesivo',
-    monto: 25.00,
-    fechaVencimiento: '2025-01-05',
-    estado: 'vencido',
-    tipo: 'multa',
-    referencia: 'REF-2025-M001',
-  },
-  {
-    id: 5,
-    concepto: 'Servicios Comunes - Enero 2025',
-    monto: 48.75,
-    fechaVencimiento: '2025-01-20',
-    estado: 'pendiente',
-    tipo: 'servicios',
-    referencia: 'REF-2025-003',
-  },
-  {
-    id: 6,
-    concepto: 'Cuota de Mantenimiento - Diciembre 2024',
-    monto: 150.00,
-    fechaVencimiento: '2024-12-10',
-    fechaPago: '2024-12-12',
-    estado: 'pagado',
-    tipo: 'mantenimiento',
-    referencia: 'REF-2024-120',
-  },
-];
 
 const estadoColors = {
   pendiente: 'bg-yellow-100 text-yellow-800 border-yellow-300',
@@ -119,6 +61,10 @@ export const PagosPage = () => {
   const pagoIdMorosoFromState = (location.state as { pagoIdMoroso?: number })?.pagoIdMoroso;
   const [selectedEstado, setSelectedEstado] = useState<string>('todos');
   const [pagos, setPagos] = useState<Pago[]>([]);
+  /** Lista completa (sin filtrar) para calcular Total Pagado y no perder abonos de filas ocultas (ej. padre con Restante). */
+  const [pagosCompletos, setPagosCompletos] = useState<Pago[]>([]);
+  /** Total pagado desde la BD: suma de (abono + excedente) de todos los pagos validados por el admin. */
+  const [totalPagadoBD, setTotalPagadoBD] = useState<number | null>(null);
   const [loadingPago, setLoadingPago] = useState<number | null>(null);
   const [pagoSeleccionado, setPagoSeleccionado] = useState<Pago | null>(null);
   const [showPagoModal, setShowPagoModal] = useState(false);
@@ -128,17 +74,22 @@ export const PagosPage = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [abonoDisponible, setAbonoDisponible] = useState<number>(0);
+  const [tasaPagos, setTasaPagos] = useState<number>(0);
   const [formPago, setFormPago] = useState({
     nombre: '',
     numero_casa: '',
     concepto: '',
     monto: '',
+    useMontoUsd: false,
+    montoUsd: '',
     referencia: '',
     descripcion: '',
     metodo_pago: '',
     comprobante: null as File | null,
   });
   const [usarAbonoEnPago, setUsarAbonoEnPago] = useState(false);
+  /** Solo cuando el usuario marca esta opción se registra el excedente como abono para otras cuotas. */
+  const [guardarExcedenteComoAbono, setGuardarExcedenteComoAbono] = useState(false);
   const [formEditPago, setFormEditPago] = useState({
     concepto: '',
     monto: '',
@@ -159,21 +110,31 @@ export const PagosPage = () => {
     }
   }, [user?.id]);
 
-  // Cargar pagos reales de la base de datos
+  const abortPagosRef = useRef(false);
   useEffect(() => {
+    abortPagosRef.current = false;
     if (user?.id) {
-      cargarPagos();
+      cargarPagos(abortPagosRef);
     }
-  }, [user]);
+    return () => {
+      abortPagosRef.current = true;
+    };
+  }, [user?.id]);
 
-  const cargarPagos = async () => {
+  const cargarPagos = async (abortRef?: React.MutableRefObject<boolean>) => {
+    const ref = abortRef ?? { current: false };
     if (!user?.id) return;
     try {
       setLoading(true);
       setError(null);
-      
-      const pagosData = await fetchPagos({ usuario_id: user.id });
-      
+
+      const [pagosData, tasaResult] = await Promise.all([
+        fetchPagos({ usuario_id: user.id }),
+        fetchTasaEnTiempoReal({ guardarEnBD: false }).then(r => r.tasa).catch(() => getTasaParaPagos()),
+      ]);
+      if (ref.current) return;
+      setTasaPagos(tasaResult);
+
       if (!pagosData || !Array.isArray(pagosData)) {
         console.warn('fetchPagos no devolvió un array válido:', pagosData);
         setPagos([]);
@@ -183,37 +144,39 @@ export const PagosPage = () => {
       // Mapear datos de la BD al formato esperado
       const pagosMapeados = pagosData.map((p: any) => {
         try {
-          // Obtener abono (campo real en la BD)
-          const montoPagado = p.abono !== undefined && p.abono !== null 
-            ? parseFloat(p.abono.toString()) 
+          // Columna abono = monto registrado cuando el admin valida (pago parcial o completo)
+          const rawAbono = p.abono ?? (p as Record<string, unknown>).abono ?? p.monto_pagado;
+          const montoPagado = (rawAbono !== undefined && rawAbono !== null)
+            ? parseFloat(String(rawAbono))
             : 0;
           
-          // Mapear estado correctamente
-          let estadoMapeado = p.estado || 'pendiente';
-          if (estadoMapeado === 'aprobado') estadoMapeado = 'pendiente'; // Aprobado se muestra como pendiente para el usuario
-          
-          // Verificar si el pago está completo
-          const montoTotal = parseFloat(p.monto || 0);
-          
-          // Solo mostrar como 'pagado' cuando el admin ya validó (estado en BD = 'pagado').
-          // No marcar como pagado solo por abono >= monto, para que "pendiente de validación" se vea como pendiente.
-          if (estadoMapeado === 'pagado') {
+          // Usar el estado real de la BD: solo 'pagado' cuando el administrador ya validó. No marcar como pagado por abono >= monto.
+          let estadoMapeado = (p.estado && String(p.estado).toLowerCase()) || 'pendiente';
+          const montoTotalRef = getMontoDisplay({ monto: parseFloat(p.monto || 0), monto_usd: p.monto_usd ?? null }, tasaResult);
+          if (estadoMapeado === 'aprobado') {
             estadoMapeado = 'pagado';
-          } else if (montoPagado > 0 && montoPagado < montoTotal && estadoMapeado !== 'pagado') {
-            // Si hay monto pagado pero no está completo, marcar como "parcial" para la UI
-            // Nota: El enum de la BD no incluye "parcial", pero lo usamos internamente para la visualización
-            estadoMapeado = 'parcial';
+          } else if (estadoMapeado !== 'pagado' && estadoMapeado !== 'rechazado' && estadoMapeado !== 'vencido') {
+            // Pendiente de validación o parcial: mantener pendiente/parcial según BD (no pasar a pagado por abono >= monto)
+            if (montoPagado > 0 && montoPagado < montoTotalRef && montoTotalRef > 0) {
+              estadoMapeado = 'parcial';
+            } else {
+              estadoMapeado = estadoMapeado === 'parcial' ? 'parcial' : 'pendiente';
+            }
           }
           
           // Verificar si fue creado por administrador
           const creado_por_admin = p.observaciones?.includes('administrador') || false;
           
+          const excedenteVal = p.excedente != null && p.excedente !== '' ? parseFloat(String(p.excedente)) : 0;
+          const excedenteNum = Number.isFinite(excedenteVal) && excedenteVal >= 0 ? excedenteVal : 0;
           return {
             id: p.id,
             concepto: p.concepto || 'Sin concepto',
             monto: parseFloat(p.monto || 0),
+            monto_usd: p.monto_usd ?? null,
             monto_pagado: montoPagado,
             abono: montoPagado, // Agregar campo abono para compatibilidad
+            excedente: excedenteNum,
             fechaVencimiento: p.fecha_vencimiento || new Date().toISOString().split('T')[0],
             fechaPago: p.fecha_pago || undefined,
             estado: estadoMapeado as 'pendiente' | 'pagado' | 'vencido' | 'parcial' | 'rechazado',
@@ -237,13 +200,16 @@ export const PagosPage = () => {
         }
       }).filter((p: Pago | null): p is Pago => p !== null) as Pago[];
 
+      // Guardar lista completa para Total Pagado (incluye filas ocultas: ej. padre con abono 730 cuando hay Restante)
+      if (!ref.current) setPagosCompletos(pagosMapeados);
+
       // Filtrar pagos: mostrar pagos parciales y restantes en lugar del pago del admin con abono
       const pagosFiltrados = pagosMapeados.filter((pago, _index, self) => {
         // Si es un pago creado por administrador
         if (pago.creado_por_admin) {
           // Verificar si hay pagos parciales o restantes relacionados
           const montoPagado = pago.abono !== undefined && pago.abono !== null ? pago.abono : (pago.monto_pagado || 0);
-          const montoTotal = pago.monto;
+          const montoTotal = getMontoDisplay(pago, tasaResult);
           const tieneAbonoParcial = montoPagado > 0 && montoPagado < montoTotal;
           
           // Si tiene abono parcial, verificar si existen pagos "Pago Parcial" o "Restante"
@@ -274,23 +240,41 @@ export const PagosPage = () => {
         // Si es un pago de usuario (parcial o restante), siempre incluirlo
         return true;
       });
-      
+
+      if (ref.current) return;
       setPagos(pagosFiltrados);
 
-      // Cargar abono disponible (excedentes aprobados que se descontarán de próximas cuotas)
       try {
-        const abono = await obtenerAbonosDisponibles(user.id);
-        setAbonoDisponible(abono);
+        const [abono, totalDesdePagos] = await Promise.all([
+          obtenerAbonosDisponibles(user.id),
+          obtenerTotalPagadoDesdePagos(user.id),
+        ]);
+        // Si la suma desde pagos falla o es null, usar el valor de usuarios.total_pagado (ya guardado en la BD).
+        let totalParaMostrar = totalDesdePagos;
+        if (totalParaMostrar === null || totalParaMostrar === undefined) {
+          const totalDesdeUsuario = await obtenerTotalPagadoUsuario(user.id);
+          if (totalDesdeUsuario !== null && totalDesdeUsuario !== undefined) {
+            totalParaMostrar = totalDesdeUsuario;
+          }
+        }
+        if (!ref.current) {
+          setAbonoDisponible(abono);
+          setTotalPagadoBD(totalParaMostrar);
+        }
       } catch (abonoErr) {
-        console.warn('Error obteniendo abono disponible:', abonoErr);
-        setAbonoDisponible(0);
+        if (!ref.current) {
+          console.warn('Error obteniendo abono / total pagado:', abonoErr);
+          setAbonoDisponible(0);
+          setTotalPagadoBD(null);
+        }
       }
     } catch (error: any) {
-      console.error('Error cargando pagos:', error);
-      setError(error.message || 'Error al cargar los pagos. Por favor, intenta de nuevo.');
-      // No mostrar alert, solo establecer el error para que se muestre en la UI
+      if (!ref.current) {
+        console.error('Error cargando pagos:', error);
+        setError(error.message || 'Error al cargar los pagos. Por favor, intenta de nuevo.');
+      }
     } finally {
-      setLoading(false);
+      if (!ref.current) setLoading(false);
     }
   };
 
@@ -308,13 +292,16 @@ export const PagosPage = () => {
     const pago = pagos.find(p => p.id === pagoIdMorosoFromState);
     if (pago) {
       hasAutoOpenedMorosoRef.current = true;
-      const restantePago = pago.monto - (pago.abono ?? pago.monto_pagado ?? 0);
+      const montoTotalPago = getMontoDisplay(pago, tasaPagos);
+      const restantePago = montoTotalPago - (pago.abono ?? pago.monto_pagado ?? 0);
       setPagoSeleccionado(pago);
       setFormPago({
         nombre: user.nombre || '',
         numero_casa: '',
         concepto: pago.concepto,
-        monto: restantePago > 0 ? restantePago.toFixed(2) : pago.monto.toString(),
+        monto: restantePago > 0 ? restantePago.toFixed(2) : montoTotalPago.toString(),
+        useMontoUsd: false,
+        montoUsd: '',
         referencia: '',
         descripcion: '',
         metodo_pago: '',
@@ -324,7 +311,7 @@ export const PagosPage = () => {
       setShowPagoModal(true);
       window.history.replaceState({}, '', '/pagos');
     }
-  }, [pagoIdMorosoFromState, user?.id, pagos]);
+  }, [pagoIdMorosoFromState, user?.id, pagos, tasaPagos]);
 
   const formatFecha = (fecha: string) => {
     const date = new Date(fecha);
@@ -368,35 +355,43 @@ export const PagosPage = () => {
         }
       }
       
-      const restantePago = pago.monto - (pago.abono ?? pago.monto_pagado ?? 0);
+      const montoTotalPago = getMontoDisplay(pago, tasaPagos);
+      const restantePago = montoTotalPago - (pago.abono ?? pago.monto_pagado ?? 0);
       setPagoSeleccionado(pago);
       setFormPago({ 
         nombre: nombreUsuario,
         numero_casa: numeroCasa,
         concepto: pago.concepto,
-        monto: restantePago > 0 ? restantePago.toFixed(2) : pago.monto.toString(),
+        monto: restantePago > 0 ? restantePago.toFixed(2) : montoTotalPago.toString(),
+        useMontoUsd: false,
+        montoUsd: '',
         referencia: '', 
         descripcion: '', 
         metodo_pago: '',
         comprobante: null 
       });
       setUsarAbonoEnPago(false);
+      setGuardarExcedenteComoAbono(false);
       setShowPagoModal(true);
     } catch (error) {
       console.error('Error obteniendo información:', error);
-      const restantePago = pago.monto - (pago.abono ?? pago.monto_pagado ?? 0);
+      const montoTotalPago = getMontoDisplay(pago, tasaPagos);
+      const restantePago = montoTotalPago - (pago.abono ?? pago.monto_pagado ?? 0);
       setPagoSeleccionado(pago);
       setFormPago({ 
         nombre: user.nombre || '',
         numero_casa: '',
         concepto: pago.concepto,
-        monto: restantePago > 0 ? restantePago.toFixed(2) : pago.monto.toString(),
+        monto: restantePago > 0 ? restantePago.toFixed(2) : montoTotalPago.toString(),
+        useMontoUsd: false,
+        montoUsd: '',
         referencia: '', 
         descripcion: '', 
         metodo_pago: '',
         comprobante: null 
       });
       setUsarAbonoEnPago(false);
+      setGuardarExcedenteComoAbono(false);
       setShowPagoModal(true);
     }
   };
@@ -472,8 +467,8 @@ export const PagosPage = () => {
       // 3. Si el pago fue creado por administrador: actualizar el mismo pago (no crear uno nuevo).
       // Así solo existe un registro; el admin lo valida y queda completado o rechazado.
       if (pagoSeleccionado.creado_por_admin) {
-        const montoIngresado = parseFloat(formPago.monto); // Monto a pagar con comprobante (puede ser 0 si usa todo el abono)
-        const montoTotal = pagoSeleccionado.monto;
+        const montoIngresado = parseFloat(formPago.monto);
+        const montoTotal = getMontoDisplay(pagoSeleccionado, tasaPagos);
         let montoActualPagado = pagoSeleccionado.abono || pagoSeleccionado.monto_pagado || 0;
         const restanteInicial = montoTotal - montoActualPagado;
 
@@ -492,9 +487,8 @@ export const PagosPage = () => {
         if (montoIngresado > restanteDespuesDeAbono) {
           excedente = montoIngresado - restanteDespuesDeAbono;
           montoAbono = restanteDespuesDeAbono;
-          alert(`⚠️ El monto ingresado (${formatMonto(montoIngresado)}) excede el restante de la cuota (${formatMonto(restanteDespuesDeAbono)}).\n\n` +
-                `Se aplicará ${formatMonto(restanteDespuesDeAbono)} al pago actual.\n` +
-                `El excedente de ${formatMonto(excedente)} se guardará como abono y se aplicará a tus próximas cuotas.`);
+          alert(`El monto ingresado (${formatMonto(montoIngresado)}) excede el restante de la cuota (${formatMonto(restanteDespuesDeAbono)}).\n\n` +
+                `Se registrará como pago completo con excedente: ${formatMonto(restanteDespuesDeAbono)} al pago actual y ${formatMonto(excedente)} de excedente (guardado solo para este pago; no se guarda en el recuadro de abono).`);
         }
         
         if (montoAbono < 0) {
@@ -503,14 +497,30 @@ export const PagosPage = () => {
           return;
         }
         
-        // Nuevo abono acumulado en este pago (abono aplicado + monto con comprobante; excedente se aplica aparte)
+        // Abono: solo el monto que cubre la cuota (hasta montoTotal). El excedente no va en abono; se guarda en columna excedente.
         const nuevoAbono = Math.min(montoActualPagado + montoAbono, montoTotal);
         const observacionesTexto = formPago.descripcion?.trim() || '';
+        const abonoUsd = formPago.useMontoUsd && formPago.montoUsd ? parseFloat(formPago.montoUsd) : null;
+        const textoMontoAplicado = (abonoUsd != null && abonoUsd > 0)
+          ? `Monto aplicado a esta cuota: ${formatMontoUsd(abonoUsd)} (${formatMonto(montoAbono)} Bs)`
+          : `Monto aplicado a esta cuota: ${formatMonto(montoAbono)}`;
+        // Obtener tasa Bs/USD del momento (API existente) para registrar en el pago
+        let tasaAlRegistrar = tasaPagos;
+        try {
+          const res = await fetchTasaEnTiempoReal({ guardarEnBD: false });
+          if (res?.tasa != null && res.tasa > 0) tasaAlRegistrar = res.tasa;
+        } catch {
+          // usar tasaPagos ya cargada en la página
+        }
+        const textoTasa = tasaAlRegistrar > 0
+          ? `. Tasa Bs/USD al registrar comprobante: ${formatMonto(tasaAlRegistrar)}`
+          : '';
         const observacionesConDetalle = observacionesTexto +
           (observacionesTexto ? '\n\n' : '') +
-          `Monto aplicado a esta cuota: ${formatMonto(montoAbono)}` +
-          (excedente > 0 ? `. Excedente (abono para otras cuotas): ${formatMonto(excedente)}` : '');
-        
+          textoMontoAplicado +
+          (excedente > 0 ? `. Pago completo con excedente: ${formatMonto(excedente)}` : '') +
+          textoTasa;
+
         await actualizarPagoConComprobante({
           pago_id: pagoSeleccionado.id,
           usuario_id: user.id,
@@ -519,26 +529,30 @@ export const PagosPage = () => {
           comprobante_archivo_id: archivo_comprobante_id ?? null,
           observaciones: observacionesConDetalle.trim() || null,
           abono: nuevoAbono,
+          monto_usd: abonoUsd ?? null,
+          excedente: excedente > 0 ? excedente : null,
         });
         
         if (excedente > 0) {
           try {
             await crearNotificacion(
               user.id,
-              'excedente_abono',
-              `Se ha registrado un excedente de ${formatMonto(excedente)} en tu pago de "${pagoSeleccionado.concepto}". El administrador lo verá al validar; al aprobar, se aplicará a tus próximas cuotas.`,
+              'pago_completo_con_excedente',
+              `Pago completo con excedente de ${formatMonto(excedente)} en "${pagoSeleccionado.concepto}". El administrador lo verá al validar.`,
               'pagos',
               pagoSeleccionado.id,
-              'Excedente registrado como abono'
+              'Pago completo con excedente'
             );
           } catch (notifError) {
             console.error('Error creando notificación:', notifError);
           }
-          // El excedente se aplicará a próximas cuotas cuando el administrador apruebe el pago (en validarPago).
         }
         
         const quedaRestante = montoTotal - nuevoAbono > 0;
         const montoRestante = montoTotal - nuevoAbono;
+        const montoUsdRestante = (pagoSeleccionado.monto_usd != null && pagoSeleccionado.monto_usd > 0 && abonoUsd != null && abonoUsd > 0)
+          ? Math.max(0, pagoSeleccionado.monto_usd - abonoUsd)
+          : null;
 
         // Si hay resto por pagar, crear un pago "Restante" para que aparezca y el usuario pueda enviar comprobante
         if (quedaRestante && montoRestante > 0) {
@@ -550,6 +564,8 @@ export const PagosPage = () => {
               concepto_base: pagoSeleccionado.concepto,
               monto_restante: montoRestante,
               monto_total_original: montoTotal,
+              monto_usd_restante: montoUsdRestante ?? undefined,
+              monto_total_original_usd: (pagoSeleccionado.monto_usd != null && pagoSeleccionado.monto_usd > 0) ? pagoSeleccionado.monto_usd : undefined,
               abono_ya_aplicado: nuevoAbono,
               tipo: pagoSeleccionado.tipo,
               fecha_vencimiento: pagoSeleccionado.fechaVencimiento,
@@ -559,10 +575,19 @@ export const PagosPage = () => {
           }
         }
 
+        const textoMontoAplicadoAlert = (abonoUsd != null && abonoUsd > 0)
+          ? `Monto aplicado: ${formatMontoUsd(abonoUsd)} (${formatMonto(montoAbono)} Bs)`
+          : `Monto aplicado: ${formatMonto(montoAbono)}`;
+        const textoRestante = (montoUsdRestante != null && montoUsdRestante > 0)
+          ? ` Se ha creado un pago por el restante (${formatMontoUsd(montoUsdRestante)} / ${formatMonto(montoRestante)} Bs) para que puedas enviar el comprobante y validarlo.`
+          : quedaRestante
+            ? ` Se ha creado un pago por el restante (${formatMonto(montoRestante)}) para que puedas enviar el comprobante y validarlo.`
+            : ' Cuando el administrador lo apruebe, quedará completado.';
+        const textoExcedente = excedente > 0 ? ` Pago completo con excedente de ${formatMonto(excedente)} (guardado solo para este pago).` : '';
         alert(
           `✅ Pago registrado correctamente.\n\n` +
-          `Monto aplicado: ${formatMonto(montoAbono)}${excedente > 0 ? `\n💰 Excedente ${formatMonto(excedente)} aplicado a otras cuotas.` : ''}\n\n` +
-          `Este pago queda en validación.${quedaRestante ? ` Se ha creado un pago por el restante (${formatMonto(montoRestante)}) para que puedas enviar el comprobante y validarlo.` : ' Cuando el administrador lo apruebe, quedará completado.'}`
+          `${textoMontoAplicadoAlert}${textoExcedente}\n\n` +
+          `Este pago queda en validación.${textoRestante}`
         );
         
         setTimeout(async () => {
@@ -579,7 +604,7 @@ export const PagosPage = () => {
         const esPagoRestante = concepto.includes('Restante');
         
         if (esPagoRestante) {
-          const montoRestantePago = pagoSeleccionado.monto;
+          const montoRestantePago = getMontoDisplay(pagoSeleccionado, tasaPagos);
           const abonoActualRestante = pagoSeleccionado.abono ?? pagoSeleccionado.monto_pagado ?? 0;
           const restanteAPagar = montoRestantePago - abonoActualRestante;
 
@@ -593,8 +618,9 @@ export const PagosPage = () => {
           const montoConComprobante = parseFloat(formPago.monto || '0');
           const nuevoAbonoRestante = abonoActualRestante + abonoAplicadoRestante + montoConComprobante;
 
-          // Actualizar el pago restante existente con todos los datos (incl. abono si se aplicó abono o monto con comprobante)
+          // Actualizar el pago restante; mantener estado pendiente hasta que el administrador valide.
           const updateData: any = {
+            estado: 'pendiente',
             referencia: formPago.referencia,
             metodo_pago: formPago.metodo_pago,
             observaciones: formPago.descripcion || pagoSeleccionado.observaciones,
@@ -656,6 +682,8 @@ export const PagosPage = () => {
         numero_casa: '', 
         concepto: '', 
         monto: '', 
+        useMontoUsd: false, 
+        montoUsd: '', 
         referencia: '', 
         descripcion: '', 
         metodo_pago: '',
@@ -739,42 +767,33 @@ export const PagosPage = () => {
     }
   };
 
-  // Calcular total pendiente considerando pagos parciales
-  // Nota: "parcial" es un estado virtual para la UI, en la BD es "pendiente" con abono > 0
+  // Calcular total pendiente considerando pagos parciales (usa tasa API para montos en USD)
   const totalPendiente = pagos.reduce((sum, p) => {
-    // Usar 'abono' que es el campo real en la BD, con fallback a monto_pagado para compatibilidad
     const montoPagado = p.abono !== undefined && p.abono !== null ? p.abono : (p.monto_pagado || 0);
-    const montoTotal = p.monto;
+    const montoTotal = getMontoDisplay(p, tasaPagos);
     const esParcial = p.estado === 'parcial' || (montoPagado > 0 && montoPagado < montoTotal);
-    
+
     if (p.estado === 'pagado') {
-      return sum; // Pagos completos no cuentan en pendiente
+      return sum;
     } else if (esParcial) {
-      // Para pagos parciales, solo contar lo que falta por pagar
       return sum + (montoTotal - montoPagado);
     } else {
-      // Para pendientes y vencidos, contar el monto completo
       return sum + montoTotal;
     }
   }, 0);
 
-  // Calcular total pagado (incluye pagos completos y parciales)
-  const totalPagado = pagos.reduce((sum, p) => {
-    const montoPagado = p.abono !== undefined && p.abono !== null ? p.abono : (p.monto_pagado || 0);
-    const montoTotal = p.monto;
-    const esParcial = p.estado === 'parcial' || (montoPagado > 0 && montoPagado < montoTotal);
-    const esRestantePagado = p.estado === 'pagado' && (p.concepto || '').includes('Restante') && (p.observaciones || '').includes('Monto total original:');
-    const montoTotalOriginalRestante = esRestantePagado && p.observaciones
-      ? (() => { const m = p.observaciones.match(/Monto total original:\s*([\d.,]+)/); return m ? parseFloat(m[1].replace(',', '.')) : p.monto; })()
-      : p.monto;
-
-    if (p.estado === 'pagado') {
-      return sum + (esRestantePagado ? montoTotalOriginalRestante : montoTotal);
-    } else if (esParcial) {
-      return sum + montoPagado;
-    }
-    return sum;
+  // Total pagado: solo pagos VALIDADOS (estado = 'pagado'). Suma abono + excedente (monto realmente pagado).
+  const totalPagadoCalculado = pagosCompletos.reduce((sum, p) => {
+    if (p.estado !== 'pagado') return sum;
+    const abono = p.abono !== undefined && p.abono !== null ? Number(p.abono) : (p.monto_pagado != null ? Number(p.monto_pagado) : 0);
+    const excedente = p.excedente != null && p.excedente > 0 ? Number(p.excedente) : 0;
+    return sum + (abono > 0 ? abono : 0) + excedente;
   }, 0);
+  // Preferir total desde BD; si falla o es null, usar total calculado desde lista (abono + excedente por pago).
+  const totalPagado = totalPagadoBD !== null && totalPagadoBD !== undefined ? totalPagadoBD : totalPagadoCalculado;
+  // Si el usuario pulsó "Reiniciar total", mostrar 0 Bs y 0 USD en la caja (solo pantalla; la BD no cambia).
+  const totalPagadoAMostrar = pagadoMostrarCero ? 0 : totalPagado;
+  const totalPagadoUsd = tasaPagos > 0 ? Math.round((totalPagadoAMostrar / tasaPagos) * 100) / 100 : 0;
 
   if (loading) {
     return (
@@ -814,7 +833,7 @@ export const PagosPage = () => {
             <ul className="list-disc list-inside space-y-1 text-red-800 mb-2">
               {pagosVencidos.map((p) => (
                 <li key={p.id}>
-                  <strong>{p.concepto}</strong> — {formatMonto(p.monto)} (vencimiento: {formatFecha(p.fechaVencimiento)})
+                  <strong>{p.concepto}</strong> — {formatMonto(getMontoDisplay(p, tasaPagos))}{p.monto_usd != null && p.monto_usd > 0 && <span className="text-indigo-600 ml-1">({formatMontoUsd(p.monto_usd)})</span>} (vencimiento: {formatFecha(p.fechaVencimiento)})
                 </li>
               ))}
             </ul>
@@ -833,7 +852,7 @@ export const PagosPage = () => {
                 <p className="text-red-600 text-sm">{error}</p>
               </div>
               <button
-                onClick={cargarPagos}
+                onClick={() => cargarPagos()}
                 className="ml-4 px-3 py-1 bg-red-600 text-white rounded hover:bg-red-700 transition-colors text-sm font-medium"
               >
                 Reintentar
@@ -849,11 +868,11 @@ export const PagosPage = () => {
               <div>
                 <p className="text-sm text-gray-600 mb-1">Total Pagado</p>
                 <p className="text-2xl font-bold text-green-600">
-                  {pagadoMostrarCero ? formatMonto(0) : formatMonto(totalPagado)}
+                  {formatMonto(totalPagadoAMostrar)}
+                  {tasaPagos > 0 && (
+                    <span className="text-indigo-600 font-semibold ml-2">({formatMontoUsd(totalPagadoUsd)})</span>
+                  )}
                 </p>
-                {pagadoMostrarCero && (
-                  <p className="text-xs text-gray-500 mt-1">Reiniciado (los pagos siguen en la lista)</p>
-                )}
               </div>
               <div className="text-4xl">✅</div>
             </div>
@@ -975,7 +994,7 @@ export const PagosPage = () => {
                     <div className="mb-2">
                       <p className="text-xs text-gray-500 mb-1">Monto Total</p>
                     <p className="text-2xl sm:text-3xl font-bold text-gray-900">
-                      {formatMonto(pago.monto)}
+                      {formatMonto(getMontoDisplay(pago, tasaPagos))}
                     </p>
                     </div>
                     {/* Mostrar información de pago completo solo si está pagado */}
@@ -984,19 +1003,19 @@ export const PagosPage = () => {
                       const montoPagado = pago.abono !== undefined && pago.abono !== null 
                         ? pago.abono 
                         : (pago.monto_pagado || 0);
-                      const montoTotal = pago.monto;
+                      const montoTotal = getMontoDisplay(pago, tasaPagos);
                       
-                      // Verificar si el pago está completo
-                      const estaCompleto = pago.estado === 'pagado' || (montoPagado >= montoTotal && montoTotal > 0);
+                      // Solo considerar completo cuando el administrador ya validó (estado = 'pagado'), no por abono >= monto.
+                      const estaCompleto = pago.estado === 'pagado';
                       
-                      // Solo mostrar información si está completo
+                      // Solo mostrar información si está validado por el admin.
                       if (estaCompleto) {
                         return (
                           <div className="mt-3 space-y-2 bg-green-50 border border-green-200 rounded-lg p-3">
                             <div className="flex justify-between items-center">
                               <span className="text-sm font-semibold text-gray-700">Total Pagado:</span>
                               <span className="text-sm font-bold text-green-600">
-                                {formatMonto(montoTotal)}
+                                {formatMonto(montoPagado)}
                               </span>
                             </div>
                             <div className="pt-2 border-t border-green-300">
@@ -1146,7 +1165,7 @@ export const PagosPage = () => {
                               setPagoSeleccionado(pago);
                               setFormEditPago({
                                 concepto: pago.concepto,
-                                monto: pago.monto.toString(),
+                                monto: getMontoDisplay(pago, tasaPagos).toString(),
                                 tipo: pago.tipo,
                                 fecha_vencimiento: pago.fechaVencimiento,
                               });
@@ -1330,7 +1349,8 @@ export const PagosPage = () => {
 
                 {/* Opción: Usar mi abono disponible (solo para cuotas admin o Restante) */}
                 {pagoSeleccionado && (pagoSeleccionado.creado_por_admin || (pagoSeleccionado.concepto || '').includes('Restante')) && abonoDisponible > 0 && (() => {
-                  const restantePago = pagoSeleccionado.monto - (pagoSeleccionado.abono ?? pagoSeleccionado.monto_pagado ?? 0);
+                  const montoTotalPago = getMontoDisplay(pagoSeleccionado, tasaPagos);
+                  const restantePago = montoTotalPago - (pagoSeleccionado.abono ?? pagoSeleccionado.monto_pagado ?? 0);
                   if (restantePago <= 0) return null;
                   const abonoAUsar = Math.min(abonoDisponible, restantePago);
                   const montoConComprobante = Math.max(0, restantePago - abonoAUsar);
@@ -1363,16 +1383,70 @@ export const PagosPage = () => {
                   );
                 })()}
 
+                {/* Opción: Pagar en dólares (misma funcionalidad que el administrador) */}
+                {pagoSeleccionado && tasaPagos > 0 && (
+                  <div className="bg-indigo-50 border border-indigo-200 rounded-lg p-4">
+                    <label className="flex items-start gap-3 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={formPago.useMontoUsd}
+                        onChange={(e) => {
+                          const checked = e.target.checked;
+                          if (checked && tasaPagos > 0 && formPago.monto) {
+                            const montoBs = parseFloat(formPago.monto);
+                            setFormPago(prev => ({
+                              ...prev,
+                              useMontoUsd: true,
+                              montoUsd: (montoBs / tasaPagos).toFixed(2),
+                              monto: montoBs.toFixed(2),
+                            }));
+                          } else {
+                            setFormPago(prev => ({ ...prev, useMontoUsd: false, montoUsd: '' }));
+                          }
+                        }}
+                        className="mt-1 h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                      />
+                      <span className="text-sm font-medium text-indigo-900">
+                        Indicar monto en dólares (USD) — mismo criterio que el administrador
+                      </span>
+                    </label>
+                  </div>
+                )}
+
                 {/* Monto */}
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Monto a Pagar con comprobante *
+                    Monto a Pagar con comprobante * {formPago.useMontoUsd ? '(en USD)' : '(en Bs)'}
                   </label>
-                  {pagoSeleccionado && pagoSeleccionado.creado_por_admin ? (() => {
+                  {formPago.useMontoUsd && tasaPagos > 0 ? (
+                    <>
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0.01"
+                        value={formPago.montoUsd}
+                        onChange={(e) => {
+                          const usd = e.target.value;
+                          const num = parseFloat(usd || '0');
+                          setFormPago(prev => ({
+                            ...prev,
+                            montoUsd: usd,
+                            monto: (num * tasaPagos).toFixed(2),
+                          }));
+                        }}
+                        className="w-full bg-white text-gray-900 border border-indigo-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                        placeholder="Ej. 20"
+                        required
+                      />
+                      <p className="mt-1 text-sm text-indigo-600">
+                        Equivalente: <strong>{formatMonto(parseFloat(formPago.monto || '0'))}</strong> Bs (según tasa actual)
+                      </p>
+                    </>
+                  ) : pagoSeleccionado && pagoSeleccionado.creado_por_admin ? (() => {
                     const montoPagado = pagoSeleccionado.abono !== undefined && pagoSeleccionado.abono !== null 
                       ? pagoSeleccionado.abono 
                       : (pagoSeleccionado.monto_pagado || 0);
-                    const montoTotal = pagoSeleccionado.monto;
+                    const montoTotal = getMontoDisplay(pagoSeleccionado, tasaPagos);
                     const montoRestante = montoTotal - montoPagado;
                     const montoMaximo = montoRestante;
                     const montoIngresado = parseFloat(formPago.monto || '0');
@@ -1396,11 +1470,9 @@ export const PagosPage = () => {
                           Máximo permitido: {formatMonto(montoMaximo)} (restante de la cuota){usarAbonoEnPago ? '. Con abono aplicado, este es el monto que pagas con comprobante.' : ''}
                         </p>
                         {excedente > 0 && (
-                          <div className="mt-2 bg-orange-50 border border-orange-200 rounded-lg p-2">
-                            <p className="text-xs text-orange-800">
-                              <strong>⚠️ Excedente detectado:</strong> El monto ingresado ({formatMonto(montoIngresado)}) excede el restante de la cuota ({formatMonto(montoMaximo)}).
-                              <br />
-                              <strong>El excedente de {formatMonto(excedente)} se guardará como abono</strong> y se aplicará automáticamente a tus próximas cuotas pendientes.
+                          <div className="mt-2 bg-blue-50 border border-blue-200 rounded-lg p-3">
+                            <p className="text-xs text-blue-800">
+                              <strong>Pago completo con excedente:</strong> El monto ingresado ({formatMonto(montoIngresado)}) excede el restante ({formatMonto(montoMaximo)}). Se registrará la cuota como cubierta y el excedente de {formatMonto(excedente)} se guardará solo para este pago (no en el recuadro de abono).
                             </p>
                           </div>
                         )}
@@ -1528,6 +1600,8 @@ export const PagosPage = () => {
                       numero_casa: '', 
                       concepto: '', 
                       monto: '', 
+                      useMontoUsd: false, 
+                      montoUsd: '', 
                       referencia: '', 
                       descripcion: '', 
                       metodo_pago: '',
@@ -1678,11 +1752,10 @@ export const PagosPage = () => {
       {/* Modal para enviar pago restante */}
       <AnimatePresence>
         {showPagoRestanteModal && pagoSeleccionado && (() => {
-          // Usar 'abono' que es el campo real en la BD, con fallback a monto_pagado para compatibilidad
           const montoPagado = pagoSeleccionado.abono !== undefined && pagoSeleccionado.abono !== null 
             ? pagoSeleccionado.abono 
             : (pagoSeleccionado.monto_pagado || 0);
-          const montoTotal = pagoSeleccionado.monto;
+          const montoTotal = getMontoDisplay(pagoSeleccionado, tasaPagos);
           const montoRestante = montoTotal - montoPagado;
           
           return (
@@ -1709,7 +1782,12 @@ export const PagosPage = () => {
                     </div>
                     <div className="flex justify-between">
                       <span className="text-gray-600 font-medium">Monto Total:</span>
-                      <span className="text-gray-900 font-semibold">{formatMonto(montoTotal)}</span>
+                      <span className="text-gray-900 font-semibold">
+                        {formatMonto(montoTotal)}
+                        {pagoSeleccionado.monto_usd != null && pagoSeleccionado.monto_usd > 0 && (
+                          <span className="text-indigo-600 ml-1">({formatMontoUsd(pagoSeleccionado.monto_usd)})</span>
+                        )}
+                      </span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-gray-600 font-medium">Monto Pagado:</span>
@@ -1717,7 +1795,12 @@ export const PagosPage = () => {
                     </div>
                     <div className="flex justify-between border-t border-blue-300 pt-2 mt-2">
                       <span className="text-gray-700 font-bold">Monto Restante:</span>
-                      <span className="text-red-600 font-bold text-lg">{formatMonto(montoRestante)}</span>
+                      <span className="text-red-600 font-bold text-lg">
+                        {formatMonto(montoRestante)}
+                        {pagoSeleccionado.monto_usd != null && pagoSeleccionado.monto_usd > 0 && montoPagado === 0 && (
+                          <span className="text-indigo-600 font-semibold ml-1">({formatMontoUsd(pagoSeleccionado.monto_usd)})</span>
+                        )}
+                      </span>
                     </div>
                     {pagoSeleccionado.descripcion && (
                       <div className="mt-3 pt-3 border-t border-blue-300">
@@ -1900,6 +1983,8 @@ export const PagosPage = () => {
                           numero_casa: '',
                           concepto: '',
                           monto: '',
+                          useMontoUsd: false,
+                          montoUsd: '',
                           referencia: '',
                           descripcion: '',
                           metodo_pago: '',
@@ -1936,6 +2021,8 @@ export const PagosPage = () => {
                         numero_casa: '', 
                         concepto: '', 
                         monto: '', 
+                        useMontoUsd: false, 
+                        montoUsd: '', 
                         referencia: '', 
                         descripcion: '', 
                         metodo_pago: '',
@@ -1984,7 +2071,10 @@ export const PagosPage = () => {
                     Monto
                   </label>
                   <p className="text-gray-900 bg-gray-50 p-3 rounded-lg font-semibold text-lg">
-                    {formatMonto(pagoSeleccionado.monto)}
+                    {formatMonto(getMontoDisplay(pagoSeleccionado, tasaPagos))}
+                    {pagoSeleccionado.monto_usd != null && pagoSeleccionado.monto_usd > 0 && (
+                      <span className="text-indigo-600 ml-1.5">({formatMontoUsd(pagoSeleccionado.monto_usd)})</span>
+                    )}
                   </p>
                 </div>
 

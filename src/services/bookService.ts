@@ -1,5 +1,6 @@
 import { supabase } from '../supabase/client';
 import type { Database } from '../supabase/supabase';
+import { getTasaParaCalculo, actualizarTasaYDetectarCambio, fetchTasaEnTiempoReal } from './exchangeRateService';
 
 // ==================== TYPE ALIASES DE ENUMS REALES ====================
 // Type aliases para los enums reales de la BD desde supabase.ts
@@ -39,9 +40,14 @@ const getCurrentLocalISOString = (): string => {
   return new Date().toISOString();
 };
 
-/** Parsea el monto de excedente (abono a favor) desde observaciones. Ej: "Excedente (abono para otras cuotas): 150,00" o "Bs. 150,00" */
+/** Parsea el monto de excedente desde observaciones. Acepta: "Pago completo con excedente: 150,00" o "Excedente (abono...): 150,00". */
 export const parsearExcedenteDeObservaciones = (observaciones: string | null | undefined): number => {
   if (!observaciones || typeof observaciones !== 'string') return 0;
+  const matchNuevo = observaciones.match(/Pago completo con excedente\s*:\s*(?:Bs\.?\s*)?([\d.,]+)/i);
+  if (matchNuevo?.[1]) {
+    const n = parseFloat(matchNuevo[1].replace(',', '.'));
+    return Number.isFinite(n) && n >= 0 ? n : 0;
+  }
   const match = observaciones.match(/Excedente\s*\(abono para otras cuotas\)\s*:\s*(?:Bs\.?\s*)?([\d.,]+)/i);
   if (!match || !match[1]) return 0;
   const numStr = match[1].replace(',', '.');
@@ -106,6 +112,7 @@ export interface Pago {
   comprobante_archivo_id: number | null;
   observaciones: string | null;
   abono: number | null; // Campo real en la BD (no monto_pagado)
+  excedente?: number | null; // Excedente del pago (cuando el usuario pagó más); se guarda en columna excedente
   created_at: string | null;
   updated_at: string | null;
   usuario?: Usuario;
@@ -114,6 +121,8 @@ export interface Pago {
   // Propiedades calculadas/virtuales para compatibilidad
   monto_pagado?: number; // Alias de abono para compatibilidad con código existente
   creado_por_admin?: boolean; // Indica si el pago fue creado por un administrador
+  monto_usd?: number | null; // Si está definido, el monto en Bs se calcula con la tasa actual (API Venezuela)
+  monto_pagado_usd?: number | null; // Monto pagado por el usuario en USD (cuando ingresa en dólares)
 }
 
 export interface Archivo {
@@ -270,7 +279,7 @@ export const registerResidente = async (userData: {
   condominio_id: number | null;
   vivienda_id: number;
   rol_en_vivienda: string;
-  preguntas_seguridad?: any; // JSONB con preguntas de seguridad
+  codigo_recuperacion?: string | null;
 }) => {
   try {
     // Si el rol es null, dejarlo como null (usuario pendiente de aprobación)
@@ -278,10 +287,6 @@ export const registerResidente = async (userData: {
     const rolMapeado = userData.rol === null ? null : (typeof userData.rol === 'string' ? mapearRol(userData.rol) : userData.rol);
     
     // 1. Crear usuario
-    // IMPORTANTE: Solo insertar campos que existen en la tabla usuarios según el esquema SQL
-    // Campos válidos: nombre, correo, telefono, cedula, rol, contraseña, condominio_id, estado
-    // auth_uid, created_at, updated_at se generan automáticamente
-    // preguntas_seguridad NO existe en la tabla usuarios
     const insertData: any = {
       nombre: userData.nombre,
       correo: userData.correo,
@@ -293,14 +298,14 @@ export const registerResidente = async (userData: {
       Estado: 'Activo' // Asegurar que usuarios nuevos estén activos (sin deudas)
     };
     
-    // Solo incluir auth_uid si se proporciona (si no, la BD lo genera automáticamente)
     if (userData.auth_uid) {
       insertData.auth_uid = userData.auth_uid;
     }
 
-    // NOTA: preguntas_seguridad NO existe en la tabla usuarios según el esquema SQL
-    // Si se necesita almacenar preguntas de seguridad, debe hacerse en otra tabla
-    
+    if (userData.codigo_recuperacion != null && String(userData.codigo_recuperacion).trim() !== '') {
+      insertData.codigo_recuperacion = String(userData.codigo_recuperacion).trim();
+    }
+
     const { data: usuario, error: userError } = await supabase
       .from('usuarios')
       .insert([insertData])
@@ -429,11 +434,33 @@ export const fetchPagoById = async (pago_id: number) => {
   }
 };
 
+/** Obtiene la tasa Bs/USD actual para cálculo de montos (desde API Venezuela o BD). */
+export const getTasaParaPagos = getTasaParaCalculo;
+
+/**
+ * Monto efectivo en Bs para mostrar en estado de pago.
+ * Si el pago tiene monto_usd, devuelve monto_usd * tasa; si no, devuelve monto.
+ * @param pago - Pago con monto y opcional monto_usd
+ * @param tasa - Tasa Bs/USD (si no se pasa, se usa 0 y se devuelve monto fijo cuando no hay monto_usd)
+ */
+export const getMontoDisplay = (pago: { monto: number; monto_usd?: number | null }, tasa?: number): number => {
+  const montoUsd = pago.monto_usd ?? null;
+  if (montoUsd != null && montoUsd > 0 && typeof tasa === 'number' && tasa > 0) {
+    return Math.round(montoUsd * tasa * 100) / 100;
+  }
+  return Number(pago.monto) || 0;
+};
+
+/** Formatea monto en USD para mostrar junto al monto en Bs (ej. $20 o $20.50). */
+export const formatMontoUsd = (montoUsd: number): string =>
+  new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(montoUsd);
+
 export const solicitarPago = async ({ 
   usuario_id, 
   vivienda_id,
   concepto, 
   monto, 
+  monto_usd,
   tipo,
   fecha_vencimiento,
   archivo_comprobante_id,
@@ -445,6 +472,7 @@ export const solicitarPago = async ({
   vivienda_id: number,
   concepto: string, 
   monto: number, 
+  monto_usd?: number | null,
   tipo: TipoPagoEnum | string, // Acepta string para compatibilidad, se mapea internamente
   fecha_vencimiento?: string,
   archivo_comprobante_id?: number,
@@ -501,6 +529,19 @@ export const solicitarPago = async ({
       condominio_id = usuarioData.condominio_id;
     }
 
+    // Si hay monto_usd, obtener tasa actual y usar monto = monto_usd * tasa (mismo criterio que admin)
+    let montoFinal = monto;
+    let montoUsdInsert: number | null = null;
+    if (monto_usd != null && monto_usd > 0) {
+      try {
+        const tasa = await getTasaParaCalculo();
+        montoFinal = Math.round(monto_usd * tasa * 100) / 100;
+        montoUsdInsert = monto_usd;
+      } catch (e) {
+        console.warn('solicitarPago: no se pudo obtener tasa, usando monto fijo', e);
+      }
+    }
+
     // 3. Crear el pago
     // Nota: El schema de la BD incluye estos campos en la tabla pagos:
     // id, usuario_id, vivienda_id, condominio_id, concepto, monto, tipo, estado, fecha_vencimiento, fecha_pago,
@@ -510,7 +551,7 @@ export const solicitarPago = async ({
       vivienda_id: vivienda_id || null, // El schema incluye vivienda_id
       condominio_id, // Condominio al que pertenece el usuario donde se creó el pago
       concepto,
-      monto,
+      monto: montoFinal,
       tipo: tipoMapeado,
       estado: 'pendiente' as EstadoEnum,
       fecha_vencimiento: fecha_vencimiento || null,
@@ -523,6 +564,7 @@ export const solicitarPago = async ({
       created_at: getCurrentLocalISOString(),
       updated_at: getCurrentLocalISOString()
     };
+    if (montoUsdInsert != null) pagoObj.monto_usd = montoUsdInsert;
     
     // Intentar insertar el pago
     let { data, error } = await supabase
@@ -541,7 +583,7 @@ export const solicitarPago = async ({
         vivienda_id: vivienda_id || null,
         condominio_id,
         concepto,
-        monto,
+        monto: montoFinal,
         tipo: tipoMapeado,
         estado: 'pendiente' as EstadoEnum,
         fecha_vencimiento: fecha_vencimiento || null,
@@ -549,6 +591,7 @@ export const solicitarPago = async ({
         created_at: getCurrentLocalISOString(),
         updated_at: getCurrentLocalISOString()
       };
+      if (montoUsdInsert != null) pagoObjBasico.monto_usd = montoUsdInsert;
 
       let { data: data2, error: error2 } = await supabase
         .from('pagos')
@@ -562,7 +605,7 @@ export const solicitarPago = async ({
           usuario_id,
           vivienda_id: vivienda_id || null,
           concepto,
-          monto,
+          monto: montoFinal,
           tipo: tipoMapeado,
           estado: 'pendiente',
           fecha_vencimiento: fecha_vencimiento || null,
@@ -570,6 +613,7 @@ export const solicitarPago = async ({
           created_at: getCurrentLocalISOString(),
           updated_at: getCurrentLocalISOString()
         };
+        if (montoUsdInsert != null) pagoMinimo.monto_usd = montoUsdInsert;
         const res = await supabase.from('pagos').insert([pagoMinimo]).select(`*, usuarios(*)`);
         error2 = res.error;
         data2 = res.data;
@@ -643,7 +687,7 @@ export const validarPago = async ({
   monto_aprobado?: number; // Monto aprobado (puede ser menor al monto total para abonos)
 }) => {
   try {
-    // 1. Obtener el pago actual
+    // 1. Obtener el pago actual (incl. abono para no sobrescribir el monto que el usuario registró)
     const { data: pago, error: pagoError } = await supabase
       .from('pagos')
       .select('*')
@@ -659,13 +703,16 @@ export const validarPago = async ({
     
     // Solo calcular abono si no se está rechazando el pago
     if (nuevo_estado !== 'rechazado') {
-      // Usar 'abono' que es el campo real en la BD (ya puede incluir lo que el usuario envió con el comprobante)
-      nuevo_abono = parseFloat((pago.abono || 0).toString());
-      if (monto_aprobado !== undefined && monto_aprobado > 0) {
-        nuevo_abono += monto_aprobado;
-      } else if (nuevo_estado === 'pagado' && nuevo_abono < monto_total && monto_total > 0) {
-        // Solo completar al monto total si el admin aprueba sin monto y faltaba algo
-        nuevo_abono = monto_total;
+      // Monto ya pagado: abono o monto_pagado (el usuario puede haber enviado comprobante y ya tener abono)
+      const raw = pago as Record<string, unknown>;
+      const abonoActual = raw.abono != null ? parseFloat(String(raw.abono)) : (raw.monto_pagado != null ? parseFloat(String(raw.monto_pagado)) : 0);
+      // Regla: si el usuario ya registró un monto (abono > 0), ese es el que queda. El admin solo confirma; no se sobrescribe con el valor del formulario.
+      if (abonoActual > 0) {
+        nuevo_abono = Math.min(abonoActual, monto_total > 0 ? monto_total : abonoActual);
+      } else {
+        // Sin comprobante previo: el admin ingresa el monto aprobado (incremento o total a registrar)
+        const incremento = (monto_aprobado !== undefined && monto_aprobado >= 0) ? monto_aprobado : 0;
+        nuevo_abono = Math.min(incremento, monto_total > 0 ? monto_total : incremento);
       }
       // Nunca superar el monto total de la cuota
       if (monto_total > 0 && nuevo_abono > monto_total) {
@@ -683,19 +730,14 @@ export const validarPago = async ({
     }
 
     // 4. Actualizar el pago
-    // IMPORTANTE: El estado se determina SOLO por el abono acumulado, no por el nuevo_estado pasado
-    // Si el abono < monto_total, debe permanecer como "pendiente" (pago parcial)
-    // Solo se marca como "pagado" cuando abono >= monto_total
+    // IMPORTANTE: Al validar, NUNCA sobrescribir la columna abono: el monto lo registró el usuario al enviar el comprobante.
+    // Solo actualizamos estado, observaciones, fecha_pago, metodo_pago, referencia. Así el "total pagado" sigue siendo el del usuario.
     const updateData: any = {
-      estado: estado_final, // Ya calculado correctamente arriba basado en abono
+      estado: estado_final,
       observaciones: observaciones || null,
       updated_at: getCurrentLocalISOString()
     };
-    
-    // Incluir abono si no se está rechazando (el campo existe en la BD)
-    if (nuevo_estado !== 'rechazado' && nuevo_abono !== undefined) {
-      updateData.abono = nuevo_abono;
-    }
+    // No actualizar abono al validar: evita que un valor distinto (ej. monto_pagado o lectura incorrecta) reemplace el pago del usuario.
 
     // Si se marca como pagado o hay abono, registrar fecha y método
     if (estado_final === 'pagado' || (nuevo_abono > 0 && monto_aprobado && monto_aprobado > 0)) {
@@ -715,6 +757,25 @@ export const validarPago = async ({
 
     if (updateError) throw updateError;
 
+    // 4. Recalcular y actualizar usuarios.total_pagado con la suma real (abono + excedente) de todos los pagos validados del usuario.
+    // Así la columna total_pagado en la BD deja de quedar null y refleja el total realmente pagado.
+    if (pago.usuario_id && nuevo_estado !== 'rechazado') {
+      try {
+        const totalDesdePagos = await obtenerTotalPagadoDesdePagos(pago.usuario_id);
+        if (totalDesdePagos !== null) {
+          await supabase
+            .from('usuarios')
+            .update({
+              total_pagado: Math.round(totalDesdePagos * 100) / 100,
+              updated_at: getCurrentLocalISOString()
+            })
+            .eq('id', pago.usuario_id);
+        }
+      } catch (errTotal) {
+        console.warn('Error actualizando usuarios.total_pagado (no crítico):', errTotal);
+      }
+    }
+
     // 4a. Si este pago es un "Restante" (pago parcial del usuario), actualizar el pago padre
     const parentPagoId = parsearPagoIdRestante(pago.observaciones);
     if (estado_final === 'pagado' && parentPagoId != null) {
@@ -725,18 +786,16 @@ export const validarPago = async ({
           .eq('id', parentPagoId)
           .single();
         if (!parentErr && parentPago) {
-          const montoParent = parseFloat((parentPago.monto || 0).toString());
-          const abonoParent = parseFloat((parentPago.abono || 0).toString());
+          const parentRaw = parentPago as unknown as Record<string, unknown>;
+          const abonoParent = parentRaw.abono != null ? parseFloat(String(parentRaw.abono)) : 0;
           const montoRestanteAprobado = parseFloat((pago.monto || 0).toString());
           const nuevoAbonoParent = abonoParent + montoRestanteAprobado;
           const parentUpdate: any = {
             abono: nuevoAbonoParent,
+            estado: 'pagado' as EstadoEnum,
+            fecha_pago: getCurrentLocalISOString(),
             updated_at: getCurrentLocalISOString()
           };
-          if (nuevoAbonoParent >= montoParent && montoParent > 0) {
-            parentUpdate.estado = 'pagado' as EstadoEnum;
-            parentUpdate.fecha_pago = getCurrentLocalISOString();
-          }
           await supabase.from('pagos').update(parentUpdate).eq('id', parentPagoId);
         }
       } catch (parentErr) {
@@ -744,14 +803,8 @@ export const validarPago = async ({
       }
     }
 
-    // 4b. Si se aprobó como pagado y había excedente, aplicar abonos a pagos pendientes (siguiente cuota, etc.)
-    if (estado_final === 'pagado' && pago.usuario_id) {
-      try {
-        await aplicarAbonosAPagosPendientes(pago.usuario_id);
-      } catch (abonoErr) {
-        console.warn('Error aplicando abonos a pagos pendientes (no crítico):', abonoErr);
-      }
-    }
+    // 4b. No registrar excedente en un "fondo" ni aplicar abonos a otros pagos al validar.
+    // El excedente (si existe) queda solo en ese pago; no se aplica automáticamente a otras cuotas.
 
     // 5. Registrar en historial
     await supabase
@@ -847,6 +900,7 @@ export const validarPago = async ({
 
 // Actualizar un pago existente (creado por admin) con los datos del usuario (referencia, comprobante, etc.)
 // No crea un pago nuevo: evita duplicados. El admin validará este mismo pago (pagado/rechazado).
+// abono = solo el monto que cubre la cuota (hasta monto); excedente = lo que sobra, en columna excedente (no en abono).
 export const actualizarPagoConComprobante = async ({
   pago_id,
   usuario_id,
@@ -854,7 +908,9 @@ export const actualizarPagoConComprobante = async ({
   metodo_pago,
   comprobante_archivo_id,
   observaciones,
-  abono
+  abono,
+  monto_usd: monto_usd_pagado,
+  excedente
 }: {
   pago_id: number;
   usuario_id: number;
@@ -862,7 +918,9 @@ export const actualizarPagoConComprobante = async ({
   metodo_pago?: string | null;
   comprobante_archivo_id?: number | null;
   observaciones?: string | null;
-  abono?: number; // Monto abonado acumulado (ej. pago parcial)
+  abono?: number; // Solo el monto que cubre la cuota (hasta monto); no incluir excedente
+  monto_usd?: number | null;
+  excedente?: number | null; // Excedente del pago (cuando el usuario paga más); se guarda en columna excedente
 }) => {
   try {
     const { data: pago, error: pagoError } = await supabase
@@ -880,7 +938,9 @@ export const actualizarPagoConComprobante = async ({
       throw new Error('Solo se puede adjuntar comprobante a pagos pendientes');
     }
 
+    // Mantener estado = pendiente hasta que el administrador valide. abono = solo lo que cubre la cuota; excedente en su columna.
     const updateData: any = {
+      estado: 'pendiente',
       updated_at: getCurrentLocalISOString()
     };
     if (referencia !== undefined) updateData.referencia = referencia ?? null;
@@ -888,6 +948,8 @@ export const actualizarPagoConComprobante = async ({
     if (comprobante_archivo_id !== undefined) updateData.comprobante_archivo_id = comprobante_archivo_id ?? null;
     if (observaciones !== undefined) updateData.observaciones = observaciones ?? null;
     if (abono !== undefined) updateData.abono = abono;
+    if (monto_usd_pagado !== undefined) updateData.monto_usd = monto_usd_pagado;
+    if (excedente !== undefined && excedente !== null) updateData.excedente = Math.max(0, excedente);
 
     const { error: updateError } = await supabase
       .from('pagos')
@@ -938,6 +1000,7 @@ export const parsearPagoIdRestante = (observaciones: string | null | undefined):
 /**
  * Crear un pago "Restante" cuando el usuario hace un pago parcial.
  * Así aparece un ítem por el monto que falta para que el usuario envíe comprobante y se valide.
+ * Si la cuota original era en USD, se puede pasar monto_usd_restante para que el restante se muestre en USD y Bs.
  */
 export const crearPagoRestante = async ({
   usuario_id,
@@ -946,6 +1009,8 @@ export const crearPagoRestante = async ({
   concepto_base,
   monto_restante,
   monto_total_original,
+  monto_usd_restante,
+  monto_total_original_usd,
   abono_ya_aplicado,
   tipo,
   fecha_vencimiento
@@ -956,6 +1021,8 @@ export const crearPagoRestante = async ({
   concepto_base: string;
   monto_restante: number;
   monto_total_original: number;
+  monto_usd_restante?: number | null;
+  monto_total_original_usd?: number | null;
   abono_ya_aplicado: number;
   tipo: string;
   fecha_vencimiento: string;
@@ -973,12 +1040,16 @@ export const crearPagoRestante = async ({
   if (existente && existente.length > 0) return existente[0];
 
   const conceptoRestante = `${concepto_base} - Restante`;
-  const observaciones = `Restante de pago_id ${parent_pago_id}. Monto total original: ${monto_total_original.toFixed(2)} Bs, ya pagado/en validación: ${abono_ya_aplicado.toFixed(2)} Bs.`;
+  const observacionesUsd = (monto_total_original_usd != null && monto_total_original_usd > 0 && monto_usd_restante != null && monto_usd_restante > 0)
+    ? ` Restante en USD: ${monto_usd_restante.toFixed(2)} (equivalente en Bs según tasa actual). Monto total original: ${monto_total_original.toFixed(2)} Bs (${monto_total_original_usd.toFixed(2)} USD).`
+    : '';
+  const observaciones = `Restante de pago_id ${parent_pago_id}. Monto total original: ${monto_total_original.toFixed(2)} Bs, ya pagado/en validación: ${abono_ya_aplicado.toFixed(2)} Bs.${observacionesUsd}`;
   return solicitarPago({
     usuario_id,
     vivienda_id,
     concepto: conceptoRestante,
     monto: monto_restante,
+    monto_usd: monto_usd_restante ?? undefined,
     tipo,
     fecha_vencimiento,
     observaciones
@@ -1069,6 +1140,7 @@ export const crearPagosMasivos = async ({
   admin_id,
   concepto,
   monto,
+  monto_usd,
   tipo,
   fecha_vencimiento,
   condominio_id,
@@ -1079,6 +1151,7 @@ export const crearPagosMasivos = async ({
   admin_id: number;
   concepto: string;
   monto: number;
+  monto_usd?: number | null; // Si se define, el monto en Bs se calcula con la tasa actual (Venezuela)
   tipo: TipoPagoEnum | string;
   fecha_vencimiento?: string;
   condominio_id?: number; // Si se especifica, crear para todos los usuarios del condominio
@@ -1241,14 +1314,27 @@ export const crearPagosMasivos = async ({
     // Mapear tipo de pago
     const tipoMapeado = typeof tipo === 'string' ? mapearTipoPago(tipo) : tipo;
 
+    // Si hay monto_usd, obtener tasa actual y usar monto = monto_usd * tasa (snapshot)
+    let montoFinal = monto;
+    let montoUsdInsert: number | null = null;
+    if (monto_usd != null && monto_usd > 0) {
+      try {
+        const tasa = await getTasaParaCalculo();
+        montoFinal = Math.round(monto_usd * tasa * 100) / 100;
+        montoUsdInsert = monto_usd;
+      } catch (e) {
+        console.warn('crearPagosMasivos: no se pudo obtener tasa, usando monto fijo', e);
+      }
+    }
+
     // Crear pagos para cada usuario (incluye condominio_id del usuario)
     const pagosACrear = usuariosObjetivo.map(usuario_id => {
-      return {
+      const obj: any = {
         usuario_id,
         vivienda_id: viviendaMap.get(usuario_id) ?? null,
         condominio_id: condominioMap.get(usuario_id) ?? null,
         concepto,
-        monto,
+        monto: montoFinal,
         tipo: tipoMapeado,
         estado: 'pendiente' as EstadoEnum,
         fecha_vencimiento: fecha_vencimiento || null,
@@ -1260,6 +1346,8 @@ export const crearPagosMasivos = async ({
         created_at: getCurrentLocalISOString(),
         updated_at: getCurrentLocalISOString()
       };
+      if (montoUsdInsert != null) obj.monto_usd = montoUsdInsert;
+      return obj;
     });
 
     // Insertar pagos en lote (cast: tipos generados pueden no incluir condominio_id/abono hasta regenerar)
@@ -1279,10 +1367,10 @@ export const crearPagosMasivos = async ({
     // Si falla (ej. columnas condominio_id/abono/vivienda_id no existen), reintentar solo con campos básicos
     if ((!pagosCreados || pagosCreados.length === 0) && insertError) {
       console.warn('Insert con todos los campos falló, reintentando sin condominio_id/vivienda_id/abono:', insertError.message);
-      const pagosMinimos = usuariosObjetivo.map(usuario_id => ({
+      const pagosMinimos: any[] = usuariosObjetivo.map(usuario_id => ({
         usuario_id,
         concepto,
-        monto,
+        monto: montoFinal,
         tipo: tipoMapeado,
         estado: 'pendiente' as const,
         fecha_vencimiento: fecha_vencimiento || null,
@@ -1290,6 +1378,7 @@ export const crearPagosMasivos = async ({
         created_at: getCurrentLocalISOString(),
         updated_at: getCurrentLocalISOString()
       }));
+      if (montoUsdInsert != null) pagosMinimos.forEach(p => { p.monto_usd = montoUsdInsert; });
       const { data: dataRetry, error: errRetry } = await supabase
         .from('pagos')
         .insert(pagosMinimos as any)
@@ -1310,7 +1399,8 @@ export const crearPagosMasivos = async ({
         datos: { 
           accion: 'pago_masivo_creado', 
           concepto, 
-          monto,
+          monto: montoFinal,
+          monto_usd: montoUsdInsert ?? undefined,
           total_usuarios: usuariosObjetivo.length
         },
         fecha_evento: getCurrentLocalISOString()
@@ -1324,11 +1414,12 @@ export const crearPagosMasivos = async ({
     }
 
     // Notificar a los usuarios afectados
+    const montoTexto = montoUsdInsert != null ? `${monto_usd} USD (≈ ${montoFinal} Bs)` : `${montoFinal} Bs.`;
     for (const usuario_id of usuariosObjetivo) {
       await crearNotificacion(
         usuario_id,
         'pago_creado',
-        `Se ha creado un nuevo pago: ${concepto} - ${monto} Bs.`,
+        `Se ha creado un nuevo pago: ${concepto} - ${montoTexto}`,
         'pagos',
         null
       );
@@ -1352,6 +1443,7 @@ export const actualizarPago = async ({
   admin_id,
   concepto,
   monto,
+  monto_usd,
   tipo,
   fecha_vencimiento,
   estado,
@@ -1361,6 +1453,7 @@ export const actualizarPago = async ({
   admin_id: number;
   concepto?: string;
   monto?: number;
+  monto_usd?: number | null; // Si se define, el monto en Bs se recalcula con la tasa actual
   tipo?: TipoPagoEnum | string;
   fecha_vencimiento?: string;
   estado?: EstadoEnum;
@@ -1395,7 +1488,21 @@ export const actualizarPago = async ({
     };
 
     if (concepto !== undefined) updateData.concepto = concepto;
-    if (monto !== undefined) updateData.monto = monto;
+    if (monto_usd != null && monto_usd > 0) {
+      try {
+        const { tasa } = await fetchTasaEnTiempoReal({ guardarEnBD: true });
+        updateData.monto = Math.round(monto_usd * tasa * 100) / 100;
+        updateData.monto_usd = monto_usd;
+      } catch (e) {
+        console.warn('actualizarPago: no se pudo obtener tasa API, usando BD', e);
+        const tasa = await getTasaParaCalculo();
+        updateData.monto = Math.round(monto_usd * tasa * 100) / 100;
+        updateData.monto_usd = monto_usd;
+      }
+    } else if (monto !== undefined) {
+      updateData.monto = monto;
+      updateData.monto_usd = null; // Quitar vinculación a USD si se pasa monto fijo
+    }
     if (tipo !== undefined) {
       const tipoMapeado = typeof tipo === 'string' ? mapearTipoPago(tipo) : tipo;
       updateData.tipo = tipoMapeado;
@@ -2747,6 +2854,41 @@ export const crearSolicitudMantenimiento = async ({
 const BUCKET_AVANCES = 'condominio-files';
 const EXPIRACION_URL_FIRMADA_SEG = 3600; // 1 hora
 
+/**
+ * Obtiene una URL válida para que el admin pueda ver el comprobante.
+ * Si la URL es de Supabase Storage (público o privado), devuelve una URL firmada para evitar 403.
+ * Si ya es data: o tiene token=, la devuelve tal cual.
+ */
+export const obtenerUrlComprobanteParaVisualizar = async (url: string | null | undefined): Promise<string | null> => {
+  if (!url || !url.trim()) return null;
+  try {
+    if (url.startsWith('data:')) return url;
+    if (url.includes('token=')) return url;
+    let bucket = '';
+    let path: string | null = null;
+    if (url.includes('condominio-files')) {
+      bucket = 'condominio-files';
+      const match = url.match(/condominio-files\/(.+?)(?:\?|$)/);
+      path = match ? decodeURIComponent(match[1].trim()) : null;
+    } else if (url.includes('/comprobantes/') || url.match(/\/storage\/v1\/object\/public\/comprobantes\//)) {
+      bucket = 'comprobantes';
+      const match = url.match(/comprobantes\/(.+?)(?:\?|$)/);
+      path = match ? decodeURIComponent(match[1].trim()) : null;
+    }
+    if (!path || !bucket) return url;
+    const { data, error } = await supabase.storage
+      .from(bucket)
+      .createSignedUrl(path, EXPIRACION_URL_FIRMADA_SEG);
+    if (error) {
+      console.warn('Error creando URL firmada para comprobante:', error);
+      return url;
+    }
+    return data?.signedUrl ?? url;
+  } catch {
+    return url;
+  }
+};
+
 /** Obtiene una URL firmada para mostrar la imagen (funciona con bucket público o privado) */
 const obtenerUrlFirmadaParaFoto = async (fotoUrl: string | null): Promise<string | null> => {
   if (!fotoUrl || !fotoUrl.trim()) return null;
@@ -3111,17 +3253,18 @@ export const getEstadoCuentaUsuario = async (usuario_id: number) => {
 // ==================== GESTIÓN DE ABONOS ====================
 
 /**
- * Consumir (restar) abono disponible de los pagos que tienen excedente (abono > monto).
- * Así el recuadro "Abono disponible" refleja lo que queda tras aplicar abono a otras cuotas.
+ * Consumir (restar) abono disponible de los pagos que tienen excedente (columna excedente > 0).
+ * Resta de la columna excedente para que el recuadro "Abono disponible" refleje lo que queda.
  */
 const consumirAbonoDisponible = async (usuario_id: number, montoAConsumir: number): Promise<void> => {
   if (montoAConsumir <= 0) return;
   try {
     const { data: pagosConExcedente, error } = await supabase
       .from('pagos')
-      .select('id, monto, abono')
+      .select('id, excedente')
       .eq('usuario_id', usuario_id)
       .eq('estado', 'pagado')
+      .gt('excedente', 0)
       .order('fecha_pago', { ascending: true, nullsFirst: true })
       .order('id', { ascending: true });
 
@@ -3129,20 +3272,19 @@ const consumirAbonoDisponible = async (usuario_id: number, montoAConsumir: numbe
 
     let restantePorConsumir = montoAConsumir;
 
-    for (const pago of pagosConExcedente) {
+    type PagoExcedente = { id: number; excedente?: number | null };
+    for (const pago of pagosConExcedente as unknown as PagoExcedente[]) {
       if (restantePorConsumir <= 0) break;
-      const montoTotal = parseFloat((pago.monto || 0).toString());
-      const abonoActual = parseFloat((pago.abono || 0).toString());
-      const excedenteEnEstePago = abonoActual - montoTotal;
-      if (excedenteEnEstePago <= 0) continue;
+      const excedenteActual = parseFloat(String(pago.excedente ?? 0));
+      if (excedenteActual <= 0) continue;
 
-      const aRestar = Math.min(restantePorConsumir, excedenteEnEstePago);
-      const nuevoAbono = abonoActual - aRestar;
+      const aRestar = Math.min(restantePorConsumir, excedenteActual);
+      const nuevoExcedente = Math.max(0, excedenteActual - aRestar);
 
       await supabase
         .from('pagos')
         .update({
-          abono: nuevoAbono,
+          excedente: Math.round(nuevoExcedente * 100) / 100,
           updated_at: getCurrentLocalISOString()
         })
         .eq('id', pago.id);
@@ -3187,35 +3329,107 @@ export const aplicarAbonoAPagoEspecifico = async (
   }
 };
 
-// Obtener abonos disponibles del usuario (excedentes de pagos completados)
+/**
+ * Obtiene el total pagado del usuario desde la BD: suma de (abono + excedente)
+ * solo de pagos ya VALIDADOS por el administrador (estado = 'pagado').
+ * Así "Total pagado" refleja el monto total realmente pagado (incluye excedentes).
+ * Los pagos pendientes de validación no cuentan.
+ * Retorna null si falla para que la UI use el total calculado.
+ */
+export const obtenerTotalPagadoDesdePagos = async (usuario_id: number): Promise<number | null> => {
+  try {
+    const { data, error } = await supabase
+      .from('pagos')
+      .select('abono, estado, excedente')
+      .eq('usuario_id', usuario_id);
+    if (error) {
+      if (error.message?.includes('excedente') || error.message?.includes('column')) {
+        const fallback = await supabase.from('pagos').select('abono, estado').eq('usuario_id', usuario_id);
+        if (fallback.error || !fallback.data || !Array.isArray(fallback.data)) return null;
+        let total = 0;
+        for (const row of fallback.data) {
+          const raw = row as Record<string, unknown>;
+          if ((String(raw?.estado || '')).toLowerCase() !== 'pagado') continue;
+          const abonoVal = raw?.abono ?? raw?.monto_pagado;
+          const abono = abonoVal != null ? parseFloat(String(abonoVal)) : 0;
+          if (Number.isFinite(abono) && abono > 0) total += abono;
+        }
+        return Math.round(total * 100) / 100;
+      }
+      if (error.code === 'PGRST204' || error.message?.includes('abono')) return null;
+      console.warn('Error obteniendo total pagado desde pagos:', error);
+      return null;
+    }
+    if (!data || !Array.isArray(data)) return 0;
+    let total = 0;
+    for (const row of data) {
+      const raw = row as Record<string, unknown>;
+      const estado = (raw?.estado != null ? String(raw.estado) : '').toLowerCase();
+      if (estado !== 'pagado') continue;
+      const abonoVal = raw?.abono ?? raw?.monto_pagado;
+      const abono = abonoVal != null ? parseFloat(String(abonoVal)) : 0;
+      const excedente = raw?.excedente != null ? parseFloat(String(raw.excedente)) : 0;
+      if (Number.isFinite(abono) && abono > 0) total += abono;
+      if (Number.isFinite(excedente) && excedente > 0) total += excedente;
+    }
+    return Math.round(total * 100) / 100;
+  } catch (e) {
+    console.warn('obtenerTotalPagadoDesdePagos:', e);
+    return null;
+  }
+};
+
+/**
+ * @deprecated Usar obtenerTotalPagadoDesdePagos (suma de abono en pagos).
+ * Obtiene el total pagado del usuario desde la columna usuarios.total_pagado.
+ */
+export const obtenerTotalPagadoUsuario = async (usuario_id: number): Promise<number | null> => {
+  try {
+    const { data, error } = await supabase
+      .from('usuarios')
+      .select('total_pagado')
+      .eq('id', usuario_id)
+      .single();
+    if (error) {
+      if (error.code === 'PGRST204' || error.message?.includes('total_pagado') || error.message?.includes('column')) return null;
+      console.warn('Error obteniendo total_pagado:', error);
+      return null;
+    }
+    const row = data as unknown as Record<string, unknown> | null;
+    if (row?.total_pagado != null) return parseFloat(String(row.total_pagado)) || 0;
+    return 0;
+  } catch (e) {
+    console.warn('obtenerTotalPagadoUsuario:', e);
+    return null;
+  }
+};
+
+/**
+ * Obtener "abono disponible" para mostrar en la caja "Abono disponible".
+ * Origen: suma de la columna excedente de todos los pagos del usuario con estado = 'pagado' y excedente > 0.
+ * Cuando el admin valida un pago con excedente, ese excedente pasa a contar aquí.
+ */
 export const obtenerAbonosDisponibles = async (usuario_id: number): Promise<number> => {
   try {
-    // Obtener todos los pagos del usuario que están pagados
     const { data: pagosPagados, error } = await supabase
       .from('pagos')
-      .select('id, monto, abono, estado')
+      .select('id, excedente')
       .eq('usuario_id', usuario_id)
-      .eq('estado', 'pagado');
+      .eq('estado', 'pagado')
+      .gt('excedente', 0);
 
     if (error) {
-      console.error('Error obteniendo abonos disponibles:', error);
+      if (error.message?.includes('excedente') || error.message?.includes('column')) return 0;
+      console.warn('Error en obtenerAbonosDisponibles:', error);
       return 0;
     }
-
-    // Calcular abonos disponibles (excedentes)
-    let abonosDisponibles = 0;
-    if (pagosPagados) {
-      for (const pago of pagosPagados) {
-        const montoTotal = parseFloat((pago.monto || 0).toString());
-        const abono = parseFloat((pago.abono || 0).toString());
-        // Si el abono es mayor al monto total, hay un excedente
-        if (abono > montoTotal) {
-          abonosDisponibles += (abono - montoTotal);
-        }
-      }
+    if (!pagosPagados || pagosPagados.length === 0) return 0;
+    let total = 0;
+    for (const pago of pagosPagados) {
+      const exc = (pago as { excedente?: number | null }).excedente;
+      if (exc != null && Number(exc) > 0) total += Number(exc);
     }
-
-    return abonosDisponibles;
+    return Math.round(total * 100) / 100;
   } catch (error) {
     console.error('Error en obtenerAbonosDisponibles:', error);
     return 0;
@@ -3246,9 +3460,15 @@ export const aplicarAbonosAPagosPendientes = async (usuario_id: number): Promise
 
     let abonosAplicados = 0;
 
-    // Aplicar abonos a cada pago pendiente hasta agotar los abonos disponibles
+    // Aplicar abonos a cada pago pendiente hasta agotar los abonos disponibles.
+    // No aplicar a pagos "Restante": el restante solo se valida cuando el usuario envía comprobante para ese pago y el admin lo aprueba.
     for (const pago of pagosPendientes) {
       if (abonosDisponibles <= 0) break;
+
+      const concepto = (pago.concepto && String(pago.concepto)) || '';
+      const observaciones = (pago.observaciones && String(pago.observaciones)) || '';
+      const esRestante = concepto.includes('Restante') || observaciones.includes('Restante de pago_id');
+      if (esRestante) continue;
 
       const montoTotal = parseFloat((pago.monto || 0).toString());
       const abonoActual = parseFloat((pago.abono || 0).toString());
@@ -3444,6 +3664,26 @@ const notificarAdministradores = async (
     }
   } catch (error) {
     console.error('❌ Error notificando administradores:', error);
+  }
+};
+
+/**
+ * Actualiza la tasa BCV/DolarApi y notifica a todos los administradores cuando la tasa cambia.
+ * Debe llamarse al cargar la sección de pagos del admin o de forma periódica.
+ */
+export const actualizarTasaBCVYNotificarAdmins = async (): Promise<{ tasa: number; notificado: boolean }> => {
+  try {
+    const { tasa, huboCambio, fuente } = await actualizarTasaYDetectarCambio();
+    if (huboCambio) {
+      const mensaje = `Tasa de cambio actualizada: ${tasa.toFixed(2)} Bs/USD (${fuente}). Los montos en USD de los pagos se muestran con esta tasa. Revise el estado de los pagos.`;
+      await notificarAdministradores(0, 'tasa_bcv_actualizada', mensaje, undefined, 'pagos');
+      return { tasa, notificado: true };
+    }
+    return { tasa, notificado: false };
+  } catch (e) {
+    console.warn('actualizarTasaBCVYNotificarAdmins:', e);
+    const tasa = await getTasaParaCalculo();
+    return { tasa, notificado: false };
   }
 };
 

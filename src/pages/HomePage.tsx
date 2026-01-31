@@ -3,7 +3,8 @@ import { Brands } from '../components/home/Brands';
 import { FeatureGrid } from '../components/home/FeatureGrid';
 import { PaymentRequestModal } from '../components/payments/PaymentRequestModal';
 import { useAuth } from '../hooks/useAuth';
-import { fetchPagos } from '../services/bookService';
+import { fetchPagos, getTasaParaPagos, getMontoDisplay, formatMontoUsd } from '../services/bookService';
+import { fetchTasaEnTiempoReal } from '../services/exchangeRateService';
 import { motion } from 'framer-motion';
 import { Link } from 'react-router-dom';
 
@@ -11,6 +12,7 @@ interface PagoPendiente {
   id: number;
   concepto: string;
   monto: number;
+  monto_usd?: number | null;
   estado: string;
   created_at: string;
 }
@@ -19,6 +21,7 @@ export const HomePage = () => {
 	const { isAuthenticated, user } = useAuth();
 	const [showPaymentModal, setShowPaymentModal] = useState(false);
 	const [pagosPendientes, setPagosPendientes] = useState<PagoPendiente[]>([]);
+	const [tasaPagos, setTasaPagos] = useState<number>(0);
 	const [, setLoadingPagos] = useState(false);
 
 	useEffect(() => {
@@ -45,50 +48,48 @@ export const HomePage = () => {
 		window.addEventListener('focus', handleFocus);
 
 		return () => {
-			document.removeEventListener('visibilitychange', handleVisibilityChange);
-			window.removeEventListener('focus', handleFocus);
+		document.removeEventListener('visibilitychange', handleVisibilityChange);
+		window.removeEventListener('focus', handleFocus);
 		};
-	}, [isAuthenticated, user]);
+	}, [isAuthenticated, user?.id]);
 
 	const cargarPagosPendientes = async () => {
 		if (!user?.id) return;
 		try {
 			setLoadingPagos(true);
-			// Obtener todos los pagos del usuario para filtrar correctamente
-			const pagos: any[] = await fetchPagos({ usuario_id: user.id });
-			
+			// Misma lógica que PagosPage: obtener pagos y tasa en paralelo para montos consistentes
+			const [pagos, tasaResult] = await Promise.all([
+				fetchPagos({ usuario_id: user.id }),
+				fetchTasaEnTiempoReal({ guardarEnBD: false }).then(r => r.tasa).catch(() => getTasaParaPagos()),
+			]);
+			setTasaPagos(tasaResult);
+
 			// Filtrar explícitamente para excluir pagos completados (pagado) y rechazados
 			// Solo mostrar pagos que están pendientes de revisión
-			const pagosFiltrados: PagoPendiente[] = pagos
+			const pagosFiltrados: PagoPendiente[] = (pagos || [])
 				.filter((pago: any) => {
 					const estado = (pago.estado || '').toLowerCase();
-					// Acceder a abono usando notación de corchetes ya que puede no estar en el tipo
-					const montoPagado = (pago.abono !== undefined && pago.abono !== null) 
-						? parseFloat(pago.abono.toString()) 
+					const montoPagado = (pago.abono !== undefined && pago.abono !== null)
+						? parseFloat(pago.abono.toString())
 						: ((pago.monto_pagado !== undefined && pago.monto_pagado !== null) ? parseFloat(pago.monto_pagado.toString()) : 0);
-					const montoTotal = parseFloat((pago.monto || 0).toString());
-					
-					// Excluir explícitamente pagos completados
-					if (estado === 'pagado' || (montoPagado >= montoTotal && montoTotal > 0)) {
-						return false;
-					}
-					
-					// Excluir pagos rechazados
-					if (estado === 'rechazado') {
-						return false;
-					}
-					
-					// Incluir solo pagos pendientes, vencidos o parciales
+					const montoUsd = pago.monto_usd ?? null;
+					const montoTotal = (montoUsd != null && montoUsd > 0 && tasaResult > 0)
+						? montoUsd * tasaResult
+						: parseFloat((pago.monto || 0).toString());
+
+					if (estado === 'pagado' || (montoPagado >= montoTotal && montoTotal > 0)) return false;
+					if (estado === 'rechazado') return false;
 					return estado === 'pendiente' || estado === 'vencido' || estado === 'parcial';
 				})
 				.map((pago: any): PagoPendiente => ({
 					id: pago.id,
 					concepto: pago.concepto || '',
 					monto: parseFloat((pago.monto || 0).toString()),
+					monto_usd: pago.monto_usd ?? null,
 					estado: pago.estado || 'pendiente',
 					created_at: pago.created_at || new Date().toISOString(),
 				}));
-			
+
 			setPagosPendientes(pagosFiltrados.slice(0, 3)); // Mostrar máximo 3 pagos pendientes
 		} catch (error) {
 			console.error('Error cargando pagos pendientes:', error);
@@ -139,7 +140,10 @@ export const HomePage = () => {
 												</span>
 											</div>
 											<p className="text-lg font-bold text-gray-900 mb-2">
-												{formatMonto(pago.monto || 0)}
+												{formatMonto(getMontoDisplay(pago, tasaPagos))}
+												{pago.monto_usd != null && pago.monto_usd > 0 && (
+													<span className="text-indigo-600 font-semibold ml-1">({formatMontoUsd(pago.monto_usd)})</span>
+												)}
 											</p>
 											<Link
 												to="/pagos"

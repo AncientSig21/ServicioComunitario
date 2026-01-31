@@ -1,7 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import { Database } from "../supabase/supabase";
 import mockDatabase from "../data/mockDatabase.json";
-import { compareAnswer } from "../utils/securityUtils";
 // Importar función de notificación (si está disponible)
 // Si no está exportada, usaremos una función local
 
@@ -519,7 +518,8 @@ export const authService = {
         escuela: usuario.escuela || null,
         numeroApartamento: usuario.numeroApartamento || undefined,
         rol: usuario.rol || 'Usuario',
-        estado: usuario.Estado ?? usuario.estado ?? 'Activo'
+        estado: usuario.Estado ?? usuario.estado ?? 'Activo',
+        codigo_recuperacion: usuario.codigo_recuperacion ?? null
       };
       
       console.log('✅ Usuario autenticado desde localStorage:', userData);
@@ -564,7 +564,8 @@ export const authService = {
         correo: usuario.correo,
         escuela: null,
         rol: usuario.rol || 'Usuario',
-        estado: usuario.Estado ?? 'Activo'
+        estado: usuario.Estado ?? 'Activo',
+        codigo_recuperacion: usuario.codigo_recuperacion ?? null
       };
 
       return { data: userResponse, error: null };
@@ -603,175 +604,86 @@ export const authService = {
     return isSupabaseConfigured();
   },
 
-  // Obtener preguntas de seguridad de un usuario
-  async getSecurityQuestions(email: string): Promise<{ data: any[] | null; error: any }> {
-    try {
-      if (!isSupabaseConfigured() || !supabase) {
-        // Modo simulado
-        const db = getMockDatabase();
-        const usuario = db.usuarios.find((u: any) => u.correo && u.correo.toLowerCase().trim() === email.toLowerCase().trim());
-        
-        if (!usuario) {
-          return { data: null, error: { message: 'Usuario no encontrado' } };
-        }
-
-        const preguntas = usuario.preguntas_seguridad?.preguntas || null;
-        return { data: preguntas, error: null };
-      }
-
-      const { data, error } = await supabase
-        .from('usuarios')
-        .select('preguntas_seguridad, nombre')
-        .eq('correo', email)
-        .maybeSingle();
-
-      if (error) throw error;
-      if (!data) {
-        return { data: null, error: { message: 'Usuario no encontrado' } };
-      }
-
-      const preguntas = data.preguntas_seguridad?.preguntas || null;
-      
-      // Si no tiene preguntas, retornar error
-      if (!preguntas || preguntas.length === 0) {
-        return { data: null, error: { message: 'Este usuario no tiene preguntas de seguridad configuradas. Contacta al administrador.' } };
-      }
-
-      return { data: preguntas, error: null };
-    } catch (error: any) {
-      console.error('Error obteniendo preguntas de seguridad:', error);
-      return { data: null, error: { message: error.message || 'Error al obtener preguntas de seguridad' } };
-    }
+  /** Obsoleto: recuperación por preguntas deshabilitada. Usar código de recuperación. */
+  async getSecurityQuestions(_email: string): Promise<{ data: any[] | null; error: any }> {
+    return {
+      data: null,
+      error: { message: 'La recuperación por preguntas de seguridad ya no está disponible. Usa tu código de recuperación en "¿Olvidaste tu contraseña?". Si no lo tienes, el administrador puede verlo en la sección Residentes.' }
+    };
   },
 
-  // Validar respuestas de seguridad y recuperar contraseña
-  async resetPasswordWithSecurityQuestions({
-    email,
-    respuestas,
-    nuevaContraseña
-  }: {
+  /** Obsoleto: recuperación por preguntas deshabilitada. Usar resetPasswordWithCode. */
+  async resetPasswordWithSecurityQuestions(_args: {
     email: string;
     respuestas: { pregunta: string; respuesta: string }[];
     nuevaContraseña: string;
   }): Promise<{ success: boolean; error: any }> {
+    return {
+      success: false,
+      error: { message: 'La recuperación por preguntas ya no está disponible. Usa tu código de recuperación en "¿Olvidaste tu contraseña?".' }
+    };
+  },
+
+  /** Recuperar contraseña con código de recuperación (correo + código). */
+  async resetPasswordWithCode({
+    email,
+    codigo,
+    nuevaContraseña
+  }: {
+    email: string;
+    codigo: string;
+    nuevaContraseña: string;
+  }): Promise<{ success: boolean; error: any }> {
     try {
       if (!isSupabaseConfigured() || !supabase) {
-        // Modo simulado
         const db = getMockDatabase();
         const usuario = db.usuarios.find((u: any) => u.correo && u.correo.toLowerCase().trim() === email.toLowerCase().trim());
-        
-        if (!usuario) {
-          return { success: false, error: { message: 'Usuario no encontrado' } };
+        if (!usuario) return { success: false, error: { message: 'Usuario no encontrado' } };
+        if (!usuario.codigo_recuperacion || String(usuario.codigo_recuperacion).trim() !== String(codigo).trim()) {
+          return { success: false, error: { message: 'Código de recuperación incorrecto.' } };
         }
-
-        const preguntas = usuario.preguntas_seguridad?.preguntas || [];
-        if (preguntas.length === 0) {
-          return { success: false, error: { message: 'No hay preguntas de seguridad configuradas' } };
-        }
-
-        // Validar todas las respuestas
-        let respuestasCorrectas = 0;
-        for (const pregunta of preguntas) {
-          const respuestaUsuario = respuestas.find(r => r.pregunta === pregunta.pregunta);
-          if (respuestaUsuario) {
-            const esCorrecta = await compareAnswer(respuestaUsuario.respuesta, pregunta.respuesta_hash);
-            if (esCorrecta) respuestasCorrectas++;
-          }
-        }
-
-        if (respuestasCorrectas < preguntas.length) {
-          return { success: false, error: { message: 'Una o más respuestas son incorrectas' } };
-        }
-
-        // Actualizar contraseña
         usuario.contraseña = nuevaContraseña;
         saveMockDatabase(db);
-
-        // Notificar administradores (simulado)
-        console.log(`🔔 Notificación: El usuario ${usuario.nombre} (${email}) ha recuperado su contraseña.`);
-
         return { success: true, error: null };
       }
 
-      // Obtener usuario y preguntas
-      const { data: usuario, error: userError } = await supabase
-        .from('usuarios')
-        .select('id, nombre, correo, preguntas_seguridad')
-        .eq('correo', email)
-        .single();
+      const { data: rpcResult, error: rpcError } = await supabase.rpc('reset_password_con_codigo', {
+        p_correo: email,
+        p_codigo: codigo,
+        p_nueva_contraseña: nuevaContraseña
+      });
 
-      if (userError || !usuario) {
-        return { success: false, error: { message: 'Usuario no encontrado' } };
+      if (rpcError) {
+        return { success: false, error: { message: rpcError.message || 'Error al restablecer la contraseña' } };
       }
 
-      const preguntas = usuario.preguntas_seguridad?.preguntas || [];
-      if (preguntas.length === 0) {
-        return { success: false, error: { message: 'No hay preguntas de seguridad configuradas' } };
+      const success = rpcResult?.success === true;
+      if (!success) {
+        return { success: false, error: { message: rpcResult?.error || 'Error al restablecer la contraseña' } };
       }
 
-      // Validar todas las respuestas
-      let respuestasCorrectas = 0;
-      for (const pregunta of preguntas) {
-        const respuestaUsuario = respuestas.find(r => r.pregunta === pregunta.pregunta);
-        if (respuestaUsuario) {
-          const esCorrecta = await compareAnswer(respuestaUsuario.respuesta, pregunta.respuesta_hash);
-          if (esCorrecta) respuestasCorrectas++;
-        }
-      }
-
-      // Requerir que todas las respuestas sean correctas
-      if (respuestasCorrectas < preguntas.length) {
-        return { success: false, error: { message: 'Una o más respuestas son incorrectas. Por favor, verifica tus respuestas.' } };
-      }
-
-      // Actualizar contraseña
-      const { error: updateError } = await supabase
-        .from('usuarios')
-        .update({ contraseña: nuevaContraseña })
-        .eq('id', usuario.id);
-
-      if (updateError) {
-        return { success: false, error: { message: 'Error al actualizar la contraseña' } };
-      }
-
-      // Notificar a los administradores
       try {
-        // Intentar notificar usando la función de bookService
-        // Si no está disponible, crear notificación directamente
         if (supabase) {
-          // Obtener administradores
-          const { data: admins } = await supabase
-            .from('usuarios')
-            .select('id')
-            .eq('rol', 'admin');
-
-          if (admins && admins.length > 0) {
-            // Crear notificaciones para cada administrador
-            const notificaciones = admins.map(admin => ({
+          const { data: admins } = await supabase.from('usuarios').select('id').eq('rol', 'admin');
+          if (admins?.length) {
+            await supabase.from('notificaciones').insert(admins.map((admin: { id: number }) => ({
               tipo: 'recuperacion_contraseña',
-              mensaje: `El usuario ${usuario.nombre} (${email}) ha recuperado su contraseña mediante preguntas de seguridad.`,
+              mensaje: `El usuario ${rpcResult?.nombre ?? ''} (${email}) ha recuperado su contraseña con el código de recuperación.`,
               usuario_id: admin.id,
-              relacion_id: usuario.id,
+              relacion_id: null,
               relacion_tipo: 'recuperacion_contraseña',
               estado: 'pendiente',
               leida: false,
               accion_requerida: false,
               fecha_creacion: new Date().toISOString()
-            }));
-
-            await supabase
-              .from('notificaciones')
-              .insert(notificaciones);
+            })));
           }
         }
-      } catch (notifError) {
-        console.warn('Error al notificar administradores:', notifError);
-        // No fallar si la notificación falla
-      }
+      } catch (_) {}
 
       return { success: true, error: null };
     } catch (error: any) {
-      console.error('Error en resetPasswordWithSecurityQuestions:', error);
+      console.error('Error en resetPasswordWithCode:', error);
       return { success: false, error: { message: error.message || 'Error al recuperar contraseña' } };
     }
   }

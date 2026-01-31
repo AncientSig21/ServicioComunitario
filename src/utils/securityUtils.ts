@@ -84,4 +84,11 @@ export const parsePasswordHash = (stored: string): { salt: string; hash: string 
   return null;
 };
 
+/** Genera un código de recuperación de contraseña (8 caracteres alfanuméricos en mayúsculas). */
+export const generateRecoveryCode = (): string => {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  const array = new Uint8Array(8);
+  crypto.getRandomValues(array);
+  return Array.from(array, b => chars[b % chars.length]).join('');
+};
 

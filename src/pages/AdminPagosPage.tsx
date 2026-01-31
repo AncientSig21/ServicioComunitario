@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react';
-import { fetchPagos, crearPagosMasivos, actualizarPago, eliminarPago, fetchCondominios, fetchResidentes } from '../services/bookService';
+import { useEffect, useState, useRef } from 'react';
+import { fetchPagos, crearPagosMasivos, actualizarPago, eliminarPago, fetchCondominios, fetchResidentes, getTasaParaPagos, getMontoDisplay, formatMontoUsd } from '../services/bookService';
+import { fetchTasaEnTiempoReal } from '../services/exchangeRateService';
 import { useAuth } from '../hooks/useAuth';
 import { Pagination } from '../components/shared/Pagination';
 import { FaPlus, FaEdit, FaTrash, FaUsers, FaBuilding, FaGlobe, FaCity } from 'react-icons/fa';
@@ -11,6 +12,7 @@ interface Pago {
   condominio_id?: number | null;
   concepto: string;
   monto: number;
+  monto_usd?: number | null;
   tipo: string;
   estado: string;
   fecha_vencimiento: string | null;
@@ -52,10 +54,15 @@ const AdminPagosPage = () => {
   const [filtroTipo, setFiltroTipo] = useState<string>('');
   const [filtroCondominioId, setFiltroCondominioId] = useState<string>('');
 
+  // Tasa Bs/USD actual (para montos en USD y notificación al admin cuando cambia)
+  const [tasaActual, setTasaActual] = useState<number>(0);
+
   // Estados para formulario de creación masiva
   const [formData, setFormData] = useState({
     concepto: '',
     monto: '',
+    montoUsd: '',
+    useMontoUsd: false,
     tipo: 'mantenimiento' as string,
     fecha_vencimiento: '',
     tipoAplicacion: 'condominio' as 'condominio' | 'usuarios' | 'todos' | 'todos_condominios',
@@ -67,43 +74,49 @@ const AdminPagosPage = () => {
   const [editFormData, setEditFormData] = useState({
     concepto: '',
     monto: '',
+    montoUsd: '',
+    useMontoUsd: false,
     tipo: 'mantenimiento' as string,
     fecha_vencimiento: '',
     estado: 'pendiente' as string,
     observaciones: '',
   });
 
+  const abortRef = useRef(false);
   useEffect(() => {
+    abortRef.current = false;
     if (user?.id) {
-      cargarDatos();
+      cargarDatos(abortRef);
     }
-  }, [user, filtroCondominioId]);
+    return () => {
+      abortRef.current = true;
+    };
+  }, [user?.id, filtroCondominioId]);
 
-  const cargarDatos = async () => {
+  const cargarDatos = async (abortRef?: React.MutableRefObject<boolean>) => {
+    const ref = abortRef ?? { current: false };
     try {
       setLoading(true);
       setError(null);
-      
-      // Cargar condominios y residentes para los formularios
-      const [condominiosData, residentesData] = await Promise.all([
+
+      const [condominiosData, residentesData, pagosData, tasa] = await Promise.all([
         fetchCondominios(),
-        fetchResidentes()
+        fetchResidentes(),
+        fetchPagos(filtroCondominioId ? { condominio_id: Number(filtroCondominioId) } : undefined),
+        fetchTasaEnTiempoReal({ guardarEnBD: false }).then(r => r.tasa).catch(() => getTasaParaPagos()),
       ]);
-      
+      if (ref.current) return;
       setCondominios(condominiosData || []);
       setResidentes(residentesData || []);
-
-      // Cargar historial de todos los pagos (opcionalmente filtrados por condominio)
-      const pagosData = await fetchPagos(
-        filtroCondominioId ? { condominio_id: Number(filtroCondominioId) } : undefined
-      );
-
       setPagos((pagosData || []) as Pago[]);
+      setTasaActual(tasa);
     } catch (err: any) {
-      console.error('Error cargando datos:', err);
-      setError(err.message || 'Error al cargar los datos');
+      if (!ref.current) {
+        console.error('Error cargando datos:', err);
+        setError(err.message || 'Error al cargar los datos');
+      }
     } finally {
-      setLoading(false);
+      if (!ref.current) setLoading(false);
     }
   };
 
@@ -145,59 +158,41 @@ const AdminPagosPage = () => {
       return;
     }
 
-    if (!formData.monto || parseFloat(formData.monto) <= 0) {
+    const useUsd = formData.useMontoUsd && formData.montoUsd.trim() !== '';
+    const montoValue = useUsd ? 0 : parseFloat(formData.monto);
+    const montoUsdValue = useUsd && formData.montoUsd ? parseFloat(formData.montoUsd) : undefined;
+    if (!useUsd && (!formData.monto || montoValue <= 0)) {
       alert('El monto debe ser mayor a 0');
+      return;
+    }
+    if (useUsd && (!formData.montoUsd || (montoUsdValue ?? 0) <= 0)) {
+      alert('El monto en USD debe ser mayor a 0');
       return;
     }
 
     try {
       setLoading(true);
       
-      const montoValue = parseFloat(formData.monto);
       const tipoMapeado = typeof formData.tipo === 'string' ? formData.tipo : formData.tipo;
+      const payload = {
+        admin_id: user.id,
+        concepto: formData.concepto,
+        monto: useUsd ? 0 : montoValue,
+        ...(useUsd && montoUsdValue != null ? { monto_usd: montoUsdValue } : {}),
+        tipo: tipoMapeado,
+        fecha_vencimiento: formData.fecha_vencimiento || undefined,
+      };
 
       let resultado;
       
       if (formData.tipoAplicacion === 'todos' || formData.aplicar_a_todos) {
-        // Aplicar a todos los usuarios
-        resultado = await crearPagosMasivos({
-          admin_id: user.id,
-          concepto: formData.concepto,
-          monto: montoValue,
-          tipo: tipoMapeado,
-          fecha_vencimiento: formData.fecha_vencimiento || undefined,
-          aplicar_a_todos: true
-        });
+        resultado = await crearPagosMasivos({ ...payload, aplicar_a_todos: true });
       } else if (formData.tipoAplicacion === 'todos_condominios') {
-        // Aplicar a todos los condominios
-        resultado = await crearPagosMasivos({
-          admin_id: user.id,
-          concepto: formData.concepto,
-          monto: montoValue,
-          tipo: tipoMapeado,
-          fecha_vencimiento: formData.fecha_vencimiento || undefined,
-          aplicar_a_todos_condominios: true
-        });
+        resultado = await crearPagosMasivos({ ...payload, aplicar_a_todos_condominios: true });
       } else if (formData.tipoAplicacion === 'condominio' && formData.condominio_id) {
-        // Aplicar a un condominio específico
-        resultado = await crearPagosMasivos({
-          admin_id: user.id,
-          concepto: formData.concepto,
-          monto: montoValue,
-          tipo: tipoMapeado,
-          fecha_vencimiento: formData.fecha_vencimiento || undefined,
-          condominio_id: parseInt(formData.condominio_id)
-        });
+        resultado = await crearPagosMasivos({ ...payload, condominio_id: parseInt(formData.condominio_id) });
       } else if (formData.tipoAplicacion === 'usuarios' && selectedResidentes.length > 0) {
-        // Aplicar a usuarios específicos
-        resultado = await crearPagosMasivos({
-          admin_id: user.id,
-          concepto: formData.concepto,
-          monto: montoValue,
-          tipo: tipoMapeado,
-          fecha_vencimiento: formData.fecha_vencimiento || undefined,
-          usuario_ids: selectedResidentes
-        });
+        resultado = await crearPagosMasivos({ ...payload, usuario_ids: selectedResidentes });
       } else {
         alert('Debe seleccionar usuarios, un condominio, todos los condominios o aplicar a todos');
         return;
@@ -208,6 +203,8 @@ const AdminPagosPage = () => {
       setFormData({
         concepto: '',
         monto: '',
+        montoUsd: '',
+        useMontoUsd: false,
         tipo: 'mantenimiento',
         fecha_vencimiento: '',
         tipoAplicacion: 'condominio',
@@ -226,9 +223,12 @@ const AdminPagosPage = () => {
 
   const handleEditarPago = (pago: Pago) => {
     setPagoSeleccionado(pago);
+    const useUsd = pago.monto_usd != null && pago.monto_usd > 0;
     setEditFormData({
       concepto: pago.concepto,
-      monto: pago.monto.toString(),
+      monto: useUsd ? '' : pago.monto.toString(),
+      montoUsd: useUsd ? String(pago.monto_usd) : '',
+      useMontoUsd: useUsd,
       tipo: pago.tipo,
       fecha_vencimiento: pago.fecha_vencimiento || '',
       estado: pago.estado,
@@ -243,11 +243,14 @@ const AdminPagosPage = () => {
 
     try {
       setLoading(true);
+      const useUsd = editFormData.useMontoUsd && editFormData.montoUsd.trim() !== '';
+      const montoUsdVal = useUsd && editFormData.montoUsd ? parseFloat(editFormData.montoUsd) : undefined;
       await actualizarPago({
         pago_id: pagoSeleccionado.id,
         admin_id: user.id,
         concepto: editFormData.concepto || undefined,
-        monto: editFormData.monto ? parseFloat(editFormData.monto) : undefined,
+        monto: useUsd ? undefined : (editFormData.monto ? parseFloat(editFormData.monto) : undefined),
+        monto_usd: montoUsdVal,
         tipo: editFormData.tipo || undefined,
         fecha_vencimiento: editFormData.fecha_vencimiento || undefined,
         estado: editFormData.estado as any,
@@ -448,7 +451,14 @@ const AdminPagosPage = () => {
                       </span>
                     </td>
                     <td className="px-4 py-3 text-sm text-gray-900">{pago.viviendas?.numero_apartamento || 'N/A'}</td>
-                    <td className="px-4 py-3 text-sm text-gray-900 font-semibold">{formatMonto(pago.monto)}</td>
+                    <td className="px-4 py-3 text-sm text-gray-900 font-semibold">
+                      {formatMonto(getMontoDisplay(pago, tasaActual))}
+                      {pago.monto_usd != null && pago.monto_usd > 0 ? (
+                        <span className="ml-1.5 text-sm font-normal text-indigo-600" title="Monto fijado en dólares">({formatMontoUsd(pago.monto_usd)})</span>
+                      ) : tasaActual > 0 && pago.monto != null && Number(pago.monto) > 0 ? (
+                        <span className="ml-1.5 text-sm font-normal text-indigo-600" title="Equivalente en dólares (tasa actual)">({formatMontoUsd(Math.round((Number(pago.monto) / tasaActual) * 100) / 100)})</span>
+                      ) : null}
+                    </td>
                     <td className="px-4 py-3">
                       <span className={`px-2 py-1 rounded text-xs ${getTipoBadge(pago.tipo)}`}>
                         {pago.tipo}
@@ -530,12 +540,43 @@ const AdminPagosPage = () => {
                 />
               </div>
 
-              {/* Monto y Tipo */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Monto <span className="text-red-500">*</span>
-                  </label>
+              {/* Tasa actual (información) */}
+              {tasaActual > 0 && (
+                <p className="text-sm text-gray-600 bg-gray-50 rounded-lg px-3 py-2">
+                  Tasa actual: <strong>{tasaActual.toFixed(2)} Bs/USD</strong> (el monto en Bs se actualiza con la tasa Venezuela)
+                </p>
+              )}
+
+              {/* Monto en USD o Monto fijo en Bs */}
+              <div>
+                <label className="flex items-center gap-2 cursor-pointer mb-2">
+                  <input
+                    type="checkbox"
+                    checked={formData.useMontoUsd}
+                    onChange={(e) => setFormData({ ...formData, useMontoUsd: e.target.checked })}
+                    className="w-4 h-4 text-blue-600 rounded"
+                  />
+                  <span className="text-sm font-medium text-gray-700">Monto en USD (se actualiza con la tasa BCV/Venezuela)</span>
+                </label>
+                {formData.useMontoUsd ? (
+                  <>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0.01"
+                      value={formData.montoUsd}
+                      onChange={(e) => setFormData({ ...formData, montoUsd: e.target.value })}
+                      className="w-full bg-white text-gray-900 border border-gray-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                      placeholder="Monto en USD (ej. 50)"
+                      required={formData.useMontoUsd}
+                    />
+                    {tasaActual > 0 && formData.montoUsd && parseFloat(formData.montoUsd) > 0 && (
+                      <p className="mt-1 text-sm text-indigo-600">
+                        Equivalente aproximado: <strong>{formatMonto(parseFloat(formData.montoUsd) * tasaActual)}</strong> (según tasa actual)
+                      </p>
+                    )}
+                  </>
+                ) : (
                   <input
                     type="number"
                     step="0.01"
@@ -543,10 +584,14 @@ const AdminPagosPage = () => {
                     value={formData.monto}
                     onChange={(e) => setFormData({ ...formData, monto: e.target.value })}
                     className="w-full bg-white text-gray-900 border border-gray-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                    placeholder="0.00"
-                    required
+                    placeholder="Monto en Bs (fijo)"
+                    required={!formData.useMontoUsd}
                   />
-                </div>
+                )}
+              </div>
+
+              {/* Tipo */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
                     Tipo <span className="text-red-500">*</span>
@@ -680,6 +725,8 @@ const AdminPagosPage = () => {
                     setFormData({
                       concepto: '',
                       monto: '',
+                      montoUsd: '',
+                      useMontoUsd: false,
                       tipo: 'mantenimiento',
                       fecha_vencimiento: '',
                       tipoAplicacion: 'condominio',
@@ -705,23 +752,52 @@ const AdminPagosPage = () => {
             <h2 className="text-2xl font-bold text-gray-900 mb-4">Editar Pago</h2>
             
             <form onSubmit={handleGuardarEdicion} className="space-y-4">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Concepto <span className="text-red-500">*</span>
-                  </label>
+              {tasaActual > 0 && (
+                <p className="text-sm text-gray-600 bg-gray-50 rounded-lg px-3 py-2">
+                  Tasa actual: <strong>{tasaActual.toFixed(2)} Bs/USD</strong>
+                </p>
+              )}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Concepto <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  value={editFormData.concepto}
+                  onChange={(e) => setEditFormData({ ...editFormData, concepto: e.target.value })}
+                  className="w-full bg-white text-gray-900 border border-gray-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  required
+                />
+              </div>
+              <div>
+                <label className="flex items-center gap-2 cursor-pointer mb-2">
                   <input
-                    type="text"
-                    value={editFormData.concepto}
-                    onChange={(e) => setEditFormData({ ...editFormData, concepto: e.target.value })}
-                    className="w-full bg-white text-gray-900 border border-gray-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                    required
+                    type="checkbox"
+                    checked={editFormData.useMontoUsd}
+                    onChange={(e) => setEditFormData({ ...editFormData, useMontoUsd: e.target.checked })}
+                    className="w-4 h-4 text-blue-600 rounded"
                   />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Monto <span className="text-red-500">*</span>
-                  </label>
+                  <span className="text-sm font-medium text-gray-700">Monto en USD (se actualiza con tasa)</span>
+                </label>
+                {editFormData.useMontoUsd ? (
+                  <>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0.01"
+                      value={editFormData.montoUsd}
+                      onChange={(e) => setEditFormData({ ...editFormData, montoUsd: e.target.value })}
+                      className="w-full bg-white text-gray-900 border border-gray-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                      placeholder="Monto en USD"
+                      required={editFormData.useMontoUsd}
+                    />
+                    {tasaActual > 0 && editFormData.montoUsd && parseFloat(editFormData.montoUsd) > 0 && (
+                      <p className="mt-1 text-sm text-indigo-600">
+                        Equivalente aproximado: <strong>{formatMonto(parseFloat(editFormData.montoUsd) * tasaActual)}</strong> (según tasa actual)
+                      </p>
+                    )}
+                  </>
+                ) : (
                   <input
                     type="number"
                     step="0.01"
@@ -729,9 +805,10 @@ const AdminPagosPage = () => {
                     value={editFormData.monto}
                     onChange={(e) => setEditFormData({ ...editFormData, monto: e.target.value })}
                     className="w-full bg-white text-gray-900 border border-gray-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                    required
+                    placeholder="Monto en Bs (fijo)"
+                    required={!editFormData.useMontoUsd}
                   />
-                </div>
+                )}
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

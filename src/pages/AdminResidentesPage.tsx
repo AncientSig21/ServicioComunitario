@@ -15,6 +15,8 @@ interface Residente {
   Estado?: string | null;
   estado?: string | null;
   condominio_id: number | null;
+  /** Código de recuperación de contraseña (visible para admin en Residentes) */
+  codigo_recuperacion?: string | null;
   condominios?: {
     nombre: string;
   } | null;
@@ -248,7 +250,7 @@ const AdminResidentesPage = () => {
             <tbody className="divide-y divide-gray-200">
               {currentResidentes.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="px-4 py-8 text-center text-gray-500">
+                  <td colSpan={10} className="px-4 py-8 text-center text-gray-500">
                     {searchQuery || filtroCondominio || filtroEstado ? 'No se encontraron residentes con los filtros aplicados' : 'No hay residentes registrados'}
                   </td>
                 </tr>
@@ -331,6 +333,10 @@ const AdminResidentesPage = () => {
             <div className="mb-4">
               <p className="text-sm text-gray-600 mb-2">
                 <span className="font-semibold">Residente:</span> {residenteSeleccionado.nombre}
+              </p>
+              <p className="text-sm text-gray-600 mb-2">
+                <span className="font-semibold">Código de recuperación:</span>{' '}
+                <span className="font-mono bg-gray-100 px-2 py-1 rounded">{residenteSeleccionado.codigo_recuperacion || '—'}</span>
               </p>
               <p className="text-sm text-gray-600 mb-4">
                 <span className="font-semibold">Estado actual:</span>{' '}

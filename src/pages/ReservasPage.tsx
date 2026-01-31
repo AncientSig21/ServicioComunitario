@@ -71,7 +71,7 @@ export const ReservasPage = () => {
     };
 
     cargarEspacios();
-  }, [user]);
+  }, [user?.id]);
 
   const filteredEspacios = selectedEstado === 'todos'
     ? espacios

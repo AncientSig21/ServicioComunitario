@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
+import { fetchTasaEnTiempoReal } from '../services/exchangeRateService';
 
 const MOCK_DB_KEY = 'mockDatabase_condominio';
 
@@ -22,6 +23,33 @@ const AdminStatsPage = () => {
   const [totalActivos, setTotalActivos] = useState<number>(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // Tasa del dólar: en tiempo real (API) o última guardada en BD
+  const [tasaDolar, setTasaDolar] = useState<number | null>(null);
+  const [tasaFuente, setTasaFuente] = useState<string>('');
+  const [tasaFecha, setTasaFecha] = useState<string | null>(null);
+  const [tasaEsEnVivo, setTasaEsEnVivo] = useState(false);
+  const [loadingTasa, setLoadingTasa] = useState(false);
+  const [showTasaFloating, setShowTasaFloating] = useState(false);
+
+  const cargarTasaDolar = async (guardarEnBD = false) => {
+    setLoadingTasa(true);
+    try {
+      const { tasa, fuente, esEnVivo, fecha } = await fetchTasaEnTiempoReal({ guardarEnBD });
+      setTasaDolar(tasa);
+      setTasaFuente(fuente);
+      setTasaEsEnVivo(esEnVivo);
+      setTasaFecha(esEnVivo ? new Date().toISOString() : (fecha ?? null));
+    } catch (_) {
+      setTasaDolar(null);
+    } finally {
+      setLoadingTasa(false);
+    }
+  };
+
+  useEffect(() => {
+    cargarTasaDolar();
+  }, []);
 
   useEffect(() => {
     const fetchStats = async () => {
@@ -169,6 +197,43 @@ const AdminStatsPage = () => {
           {error}
         </div>
       )}
+
+      {/* Botón flotante: precio del dólar (Banco de Venezuela) */}
+      <div className="fixed bottom-6 right-6 z-40">
+        <div className="relative">
+          {showTasaFloating && (
+            <div className="absolute bottom-full right-0 mb-2 w-72 rounded-xl bg-white shadow-xl border border-gray-200 p-4">
+              <div className="text-sm font-semibold text-gray-800 mb-2">Precio del dólar (Bs/USD)</div>
+              <div className="text-2xl font-bold text-amber-600">
+                {loadingTasa ? 'Cargando...' : tasaDolar != null ? `${tasaDolar.toFixed(2)} Bs` : 'No disponible'}
+              </div>
+              {tasaFuente && <div className="text-xs text-gray-500 mt-1">Fuente: {tasaFuente}</div>}
+              {tasaEsEnVivo && <div className="text-xs text-green-600 font-medium mt-0.5">En tiempo real</div>}
+              {tasaFecha && (
+                <div className="text-xs text-gray-400 mt-0.5">
+                  {new Date(tasaFecha).toLocaleDateString('es-VE', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                </div>
+              )}
+              <button
+                type="button"
+                onClick={() => cargarTasaDolar(false)}
+                className="mt-3 w-full py-1.5 text-xs font-medium text-amber-700 bg-amber-50 rounded-lg hover:bg-amber-100"
+              >
+                Actualizar (tiempo real)
+              </button>
+              <div className="absolute -bottom-2 right-4 w-4 h-4 bg-white border-r border-b border-gray-200 transform rotate-45" />
+            </div>
+          )}
+          <button
+            type="button"
+            onClick={() => setShowTasaFloating((v) => !v)}
+            className="flex items-center justify-center w-14 h-14 rounded-full bg-amber-500 text-white shadow-lg hover:bg-amber-600 focus:outline-none focus:ring-2 focus:ring-amber-400 focus:ring-offset-2"
+            title="Ver precio del dólar (Banco de Venezuela)"
+          >
+            <span className="text-xl font-bold">$</span>
+          </button>
+        </div>
+      </div>
     </div>
   );
 };

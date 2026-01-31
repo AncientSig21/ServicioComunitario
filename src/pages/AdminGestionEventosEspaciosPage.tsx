@@ -170,7 +170,7 @@ export const AdminGestionEventosEspaciosPage = () => {
         cargarSolicitudesMantenimiento();
       }
     }
-  }, [user, activeTab, filtroEstadoMantenimiento]);
+  }, [user?.id, activeTab, filtroEstadoMantenimiento]);
 
   // Filtrar eventos
   const eventosFiltrados = eventos.filter(evento => {

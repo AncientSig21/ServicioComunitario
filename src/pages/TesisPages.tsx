@@ -90,7 +90,7 @@ export const TesisPages = () => {
       }
     };
     cargarEspacios();
-  }, [user]);
+  }, [user?.id]);
 
   const formatFecha = (fecha: string) => {
     return new Date(fecha).toLocaleDateString('es-ES', {

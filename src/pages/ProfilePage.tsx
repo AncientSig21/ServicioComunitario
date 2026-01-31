@@ -241,6 +241,22 @@ export const ProfilePage = () => {
                 </div>
               )}
 
+              {/* Código de recuperación (solo lectura) */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Código de recuperación
+                </label>
+                <input
+                  type="text"
+                  value={user.codigo_recuperacion ?? '—'}
+                  readOnly
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-gray-50 font-mono text-gray-900"
+                />
+                <p className="text-xs text-gray-500 mt-1">
+                  Usa este código en &quot;¿Olvidaste tu contraseña?&quot; para restablecer tu contraseña.
+                </p>
+              </div>
+
               <button
                 onClick={handleSaveProfile}
                 disabled={isSaving}
@@ -353,6 +369,16 @@ export const ProfilePage = () => {
                   <p className="text-gray-900 font-medium">{user.numeroApartamento}</p>
                 </div>
               )}
+
+              <div className="pt-4 border-t border-gray-200">
+                <p className="text-sm text-gray-600 mb-2">Código de recuperación</p>
+                <p className="font-mono text-lg font-semibold text-gray-900 bg-gray-100 px-3 py-2 rounded-lg">
+                  {user.codigo_recuperacion || '—'}
+                </p>
+                <p className="text-xs text-gray-500 mt-2">
+                  Usa este código en &quot;¿Olvidaste tu contraseña?&quot; para restablecer tu contraseña. Guárdalo en un lugar seguro.
+                </p>
+              </div>
             </div>
           </div>
         </div>

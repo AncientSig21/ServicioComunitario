@@ -101,7 +101,7 @@ export const MantenimientoPage = () => {
     };
 
     cargarSolicitudes();
-  }, [user]);
+  }, [user?.id]);
 
   const filteredSolicitudes = selectedEstado === 'todos'
     ? solicitudes

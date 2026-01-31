@@ -39,10 +39,11 @@ export const useAuth = () => {
     }
   }, []);
 
-  // Refrescar estado del usuario desde la BD al cargar (detecta moroso si admin lo marcó después de login)
+  // Refrescar estado del usuario desde la BD después del primer paint (no bloquea carga inicial)
   useEffect(() => {
     if (!user?.id || !isConfigured) return;
-    refreshUserStatus();
+    const id = setTimeout(() => refreshUserStatus(), 0);
+    return () => clearTimeout(id);
   }, [user?.id, isConfigured]);
 
   // Listener para cambios en localStorage
@@ -164,7 +165,6 @@ export const useAuth = () => {
     if (!user || !supabase) return;
 
     try {
-      // Actualizar la información del usuario incluyendo el estado
       const { data, error } = await supabase
         .from('usuarios')
         .select('id, nombre, correo, rol, condominio_id, Estado')
@@ -172,13 +172,25 @@ export const useAuth = () => {
         .single();
 
       if (!error && data) {
-        const updatedUser = { 
-          ...user, 
+        const newEstado = data.Estado ?? user.estado ?? 'Activo';
+        const newRol = data.rol || user.rol;
+        const newCondominioId = data.condominio_id ?? user.condominio_id;
+        // Solo actualizar estado si algo relevante cambió (evita re-renders en cascada)
+        const estadoCambio = (user.estado ?? (user as any).Estado) !== newEstado;
+        const rolCambio = (user.rol ?? (user as any).rol) !== newRol;
+        const condominioCambio = (user.condominio_id ?? (user as any).condominio_id) !== newCondominioId;
+        if (!estadoCambio && !rolCambio && !condominioCambio && user.nombre === data.nombre) {
+          return;
+        }
+        const updatedUser = {
+          ...user,
           id: data.id,
           nombre: data.nombre,
           correo: data.correo || user.correo,
-          rol: data.rol || user.rol,
-          estado: data.Estado ?? user.estado ?? 'Activo'
+          rol: newRol,
+          condominio_id: newCondominioId,
+          estado: newEstado,
+          codigo_recuperacion: data.codigo_recuperacion ?? user.codigo_recuperacion ?? null
         };
         authService.setCurrentUser(updatedUser);
         setUser(updatedUser);

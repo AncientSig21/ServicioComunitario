@@ -17,7 +17,8 @@
     "test:connection": "node scripts/test-connection.js",
     "test:crud": "node scripts/test-crud-functions.js",
     "test:functionalities": "node scripts/test-functionalities.js",
-    "test:create": "echo 'Run browser-test-create-and-verify.js in browser console'"
+    "test:create": "echo 'Run browser-test-create-and-verify.js in browser console'",
+    "tasa:bcv": "node scripts/actualizar-tasa-bcv.js"
   },
   "dependencies": {
     "@headlessui/react": "^2.2.9",

@@ -1,4 +1,4 @@
-import { ReactNode, useState, useEffect } from 'react';
+import { ReactNode, useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../hooks/useAuth';
 import { supabase } from '../../supabase/client';
@@ -19,35 +19,32 @@ export const AdminProtectedRoute = ({ children }: AdminProtectedRouteProps) => {
   const { showError } = useToast();
   const [isAdmin, setIsAdmin] = useState<boolean | null>(null);
   const [checkingRole, setCheckingRole] = useState(true);
+  const verifiedUserIdRef = useRef<number | null>(null);
+  const navigateRef = useRef(navigate);
+  const showErrorRef = useRef(showError);
+  navigateRef.current = navigate;
+  showErrorRef.current = showError;
 
   useEffect(() => {
     const verifyAdminRole = async () => {
-      // Si no está autenticado, redirigir a login
       if (!authLoading && !isAuthenticated) {
-        navigate('/login');
+        navigateRef.current('/login');
         return;
       }
 
-      // Si no hay usuario, esperar o redirigir
       const userId = user?.id;
       if (!user || !userId) {
-        if (!authLoading) {
-          navigate('/login');
-        }
+        if (!authLoading) navigateRef.current('/login');
         return;
       }
 
-      // Si ya verificamos que es admin para este usuario, no volver a consultar la BD
-      if (isAdmin === true) {
+      if (verifiedUserIdRef.current === userId) {
         setCheckingRole(false);
         return;
       }
 
       try {
         setCheckingRole(true);
-        
-        // Verificar rol directamente desde la base de datos
-        // Esto asegura que siempre consultamos la fuente de verdad
         const { data: usuario, error } = await supabase
           .from('usuarios')
           .select('id, rol')
@@ -57,40 +54,39 @@ export const AdminProtectedRoute = ({ children }: AdminProtectedRouteProps) => {
         if (error) {
           console.error('Error verificando rol de admin:', error);
           setIsAdmin(false);
-          showError('Error al verificar permisos. Intenta iniciar sesión nuevamente.');
-          navigate('/', { replace: true });
+          verifiedUserIdRef.current = null;
+          showErrorRef.current('Error al verificar permisos. Intenta iniciar sesión nuevamente.');
+          navigateRef.current('/', { replace: true });
           return;
         }
 
-        // Verificar si el rol es 'admin' (case-insensitive)
         const userRole = usuario?.rol?.toLowerCase();
         const isUserAdmin = userRole === 'admin';
 
         if (!isUserAdmin) {
           console.warn('Acceso denegado: Usuario no es administrador. Rol actual:', usuario?.rol);
           setIsAdmin(false);
-          // Mostrar mensaje de error
-          showError('No tienes permisos para acceder al panel de administración. Solo los administradores pueden acceder a esta sección.');
-          // Redirigir a la página principal
-          navigate('/', { replace: true });
+          verifiedUserIdRef.current = null;
+          showErrorRef.current('No tienes permisos para acceder al panel de administración. Solo los administradores pueden acceder a esta sección.');
+          navigateRef.current('/', { replace: true });
           return;
         }
 
-        // Usuario es admin
+        verifiedUserIdRef.current = userId;
         setIsAdmin(true);
       } catch (error: any) {
         console.error('Error al verificar rol de administrador:', error);
         setIsAdmin(false);
-        showError('Error al verificar permisos de administrador. Intenta iniciar sesión nuevamente.');
-        navigate('/', { replace: true });
+        verifiedUserIdRef.current = null;
+        showErrorRef.current('Error al verificar permisos de administrador. Intenta iniciar sesión nuevamente.');
+        navigateRef.current('/', { replace: true });
       } finally {
         setCheckingRole(false);
       }
     };
 
     verifyAdminRole();
-    // Solo re-verificar cuando cambie el id del usuario (no cuando cambie el objeto user por refreshUserStatus)
-  }, [user?.id, isAuthenticated, authLoading, isAdmin, navigate, showError]);
+  }, [user?.id, isAuthenticated, authLoading]);
 
   // Mostrar loading mientras se verifica
   if (authLoading || checkingRole || isAdmin === null) {
