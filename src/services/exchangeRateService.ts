@@ -11,6 +11,12 @@ const TASA_CAMBIO_TABLE = 'tasa_cambio';
 const DOLAR_API_OFICIAL = 'https://ve.dolarapi.com/v1/dolares/oficial';
 const DOLAR_API_ALT = 'https://dolarapi.com/v1/dolares/bolivar';
 
+/** Tasa fallback cuando la API y la BD no devuelven una válida (precio dólar actual aprox. en Bs). No se usa tasa 10 ni valores bajos. */
+const TASA_FALLBACK_BS_USD = 370.25;
+
+/** Mínimo razonable para tasa Bs/USD; tasas menores (ej. 10) se ignoran y se usa TASA_FALLBACK_BS_USD. */
+const TASA_MINIMA_VALIDA = 100;
+
 export interface TasaCambioRow {
   id: number;
   tasa_bs_usd: number;
@@ -80,8 +86,9 @@ export const saveTasaToDB = async (
  */
 export const getTasaActual = async (): Promise<number> => {
   const fromDb = await getTasaFromDB();
-  if (fromDb && fromDb.tasa_bs_usd > 0) return Number(fromDb.tasa_bs_usd);
-  return 367.30;
+  const tasaDb = fromDb?.tasa_bs_usd ? Number(fromDb.tasa_bs_usd) : 0;
+  if (tasaDb >= TASA_MINIMA_VALIDA) return tasaDb;
+  return TASA_FALLBACK_BS_USD;
 };
 
 /**
@@ -94,25 +101,26 @@ export const actualizarTasaYDetectarCambio = async (): Promise<{
   fuente: string;
 }> => {
   const fromDb = await getTasaFromDB();
-  const tasa = fromDb && fromDb.tasa_bs_usd > 0 ? Number(fromDb.tasa_bs_usd) : 367.30;
+  const tasaDb = fromDb?.tasa_bs_usd ? Number(fromDb.tasa_bs_usd) : 0;
+  const tasa = tasaDb >= TASA_MINIMA_VALIDA ? tasaDb : TASA_FALLBACK_BS_USD;
   const fuente = fromDb?.fuente ?? 'BCV';
   return { tasa, huboCambio: false, fuente };
 };
 
 /**
  * Tasa para mostrar/calcular montos en Bs desde monto_usd.
- * Lee de la BD; si no hay, usa fallback 367.30.
+ * Solo usa tasa razonable (>= TASA_MINIMA_VALIDA); si en BD hay 10 u otra baja, usa TASA_FALLBACK_BS_USD (370.25).
  */
 export const getTasaParaCalculo = async (): Promise<number> => {
   const fromDb = await getTasaFromDB();
-  if (fromDb && fromDb.tasa_bs_usd > 0) return Number(fromDb.tasa_bs_usd);
-  return 367.30;
+  const tasaDb = fromDb?.tasa_bs_usd ? Number(fromDb.tasa_bs_usd) : 0;
+  if (tasaDb >= TASA_MINIMA_VALIDA) return tasaDb;
+  return TASA_FALLBACK_BS_USD;
 };
 
 /**
  * Obtiene la tasa del dólar en tiempo real desde una API pública (DolarApi Venezuela).
- * Úsala cuando necesites mostrar el precio actual sin depender de la BD.
- * Si la API falla, devuelve la última tasa en BD o 367.30.
+ * Solo se usa tasa en tiempo real (API) o fallback 370.25 Bs; no se usa tasa 10 ni valores bajos de BD.
  */
 export const fetchTasaEnTiempoReal = async (options?: {
   guardarEnBD?: boolean;
@@ -122,12 +130,11 @@ export const fetchTasaEnTiempoReal = async (options?: {
       const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
       if (!res.ok) return null;
       const data = await res.json();
-      // Preferir tasa directa del banco (compra/venta); solo usar promedio si no hay compra/venta
       const venta = typeof data.venta === 'number' && data.venta > 0 ? data.venta : null;
       const compra = typeof data.compra === 'number' && data.compra > 0 ? data.compra : null;
       const promedio = typeof data.promedio === 'number' && data.promedio > 0 ? data.promedio : null;
       const tasa = venta ?? compra ?? promedio ?? data.precio;
-      if (typeof tasa !== 'number' || tasa <= 0) return null;
+      if (typeof tasa !== 'number' || tasa <= 0 || tasa < TASA_MINIMA_VALIDA) return null;
       const esDirecto = venta != null || compra != null;
       return { tasa, fuente: data.nombre ?? data.fuente ?? 'DolarApi', esDirecto };
     } catch {
@@ -138,27 +145,21 @@ export const fetchTasaEnTiempoReal = async (options?: {
   let result = await tryUrl(DOLAR_API_OFICIAL);
   if (!result) result = await tryUrl(DOLAR_API_ALT);
 
-  if (result && result.tasa > 0) {
-    // Si la API solo devolvió promedio (no compra/venta) y tenemos tasa en BD tipo Banco de Venezuela (~367), preferirla
-    const fromDb = await getTasaFromDB();
-    const tasaDb = fromDb?.tasa_bs_usd ? Number(fromDb.tasa_bs_usd) : 0;
-    const usarBd =
-      !result.esDirecto && tasaDb >= 300 && tasaDb <= 400;
-    const tasaFinal = usarBd ? tasaDb : result.tasa;
-    const fuenteFinal = usarBd ? (fromDb?.fuente ?? 'Banco de Venezuela') : result.fuente;
-    if (options?.guardarEnBD && !usarBd) {
+  if (result && result.tasa >= TASA_MINIMA_VALIDA) {
+    if (options?.guardarEnBD) {
       await saveTasaToDB(result.tasa, result.fuente);
     }
     return {
-      tasa: tasaFinal,
-      fuente: fuenteFinal,
+      tasa: result.tasa,
+      fuente: result.fuente,
       esEnVivo: true,
-      fecha: usarBd && fromDb?.fecha_actualizacion ? fromDb.fecha_actualizacion : undefined,
+      fecha: undefined,
     };
   }
 
   const fromDb = await getTasaFromDB();
-  const tasa = fromDb && fromDb.tasa_bs_usd > 0 ? Number(fromDb.tasa_bs_usd) : 367.30;
-  const fuente = fromDb?.fuente ?? 'Última guardada';
+  const tasaDb = fromDb?.tasa_bs_usd ? Number(fromDb.tasa_bs_usd) : 0;
+  const tasa = tasaDb >= TASA_MINIMA_VALIDA ? tasaDb : TASA_FALLBACK_BS_USD;
+  const fuente = tasaDb >= TASA_MINIMA_VALIDA ? (fromDb?.fuente ?? 'Última guardada') : 'Tasa fallback (370,25 Bs)';
   return { tasa, fuente, esEnVivo: false, fecha: fromDb?.fecha_actualizacion ?? null };
 };

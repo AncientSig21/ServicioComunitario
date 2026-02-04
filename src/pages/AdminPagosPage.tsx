@@ -1,9 +1,9 @@
 import { useEffect, useState, useRef } from 'react';
-import { fetchPagos, crearPagosMasivos, actualizarPago, eliminarPago, fetchCondominios, fetchResidentes, getTasaParaPagos, getMontoDisplay, formatMontoUsd } from '../services/bookService';
+import { fetchPagos, crearPagosMasivos, actualizarPago, eliminarPago, fetchCondominios, fetchResidentes, getTasaParaPagos, getMontoDisplay, formatMontoUsd, fetchPagoById, obtenerUrlComprobanteParaVisualizar } from '../services/bookService';
 import { fetchTasaEnTiempoReal } from '../services/exchangeRateService';
 import { useAuth } from '../hooks/useAuth';
 import { Pagination } from '../components/shared/Pagination';
-import { FaPlus, FaEdit, FaTrash, FaUsers, FaBuilding, FaGlobe, FaCity } from 'react-icons/fa';
+import { FaPlus, FaEdit, FaTrash, FaEye, FaUsers, FaBuilding, FaGlobe, FaCity } from 'react-icons/fa';
 
 interface Pago {
   id: number;
@@ -41,10 +41,17 @@ const AdminPagosPage = () => {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [showDetallesModal, setShowDetallesModal] = useState(false);
+  const [pagoDetallesId, setPagoDetallesId] = useState<number | null>(null);
+  const [pagoDetalles, setPagoDetalles] = useState<any>(null);
+  const [detallesComprobanteUrl, setDetallesComprobanteUrl] = useState<string | null>(null);
+  const [detallesComprobanteMime, setDetallesComprobanteMime] = useState<string | null>(null);
+  const detallesComprobanteBlobRef = useRef<string | null>(null);
   const [pagoSeleccionado, setPagoSeleccionado] = useState<Pago | null>(null);
   const [condominios, setCondominios] = useState<any[]>([]);
   const [residentes, setResidentes] = useState<any[]>([]);
   const [selectedResidentes, setSelectedResidentes] = useState<number[]>([]);
+  const [busquedaUsuariosModal, setBusquedaUsuariosModal] = useState('');
 
   // Estados para paginación y filtros
   const [currentPage, setCurrentPage] = useState(1);
@@ -92,6 +99,55 @@ const AdminPagosPage = () => {
       abortRef.current = true;
     };
   }, [user?.id, filtroCondominioId]);
+
+  useEffect(() => {
+    if (!showDetallesModal || !pagoDetallesId) return;
+    let cancelled = false;
+    fetchPagoById(pagoDetallesId).then((full) => {
+      if (!cancelled) setPagoDetalles(full);
+    });
+    return () => { cancelled = true; setPagoDetalles(null); };
+  }, [showDetallesModal, pagoDetallesId]);
+
+  useEffect(() => {
+    const url = pagoDetalles?.archivos?.url;
+    if (detallesComprobanteBlobRef.current) {
+      URL.revokeObjectURL(detallesComprobanteBlobRef.current);
+      detallesComprobanteBlobRef.current = null;
+    }
+    setDetallesComprobanteMime(null);
+    if (!url) {
+      setDetallesComprobanteUrl(null);
+      return;
+    }
+    if (url.startsWith('data:')) {
+      try {
+        const mime = (url.match(/^data:([^;]+);/)?.[1]) || 'image/jpeg';
+        const base64 = url.split(',')[1];
+        if (base64) {
+          const binary = atob(base64);
+          const bytes = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+          const blob = new Blob([bytes], { type: mime });
+          const blobUrl = URL.createObjectURL(blob);
+          detallesComprobanteBlobRef.current = blobUrl;
+          setDetallesComprobanteUrl(blobUrl);
+          setDetallesComprobanteMime(mime);
+        } else {
+          setDetallesComprobanteUrl(url);
+          setDetallesComprobanteMime(mime);
+        }
+      } catch {
+        setDetallesComprobanteUrl(url);
+      }
+      return;
+    }
+    let cancelled = false;
+    obtenerUrlComprobanteParaVisualizar(url).then((resolved) => {
+      if (!cancelled) setDetallesComprobanteUrl(resolved);
+    });
+    return () => { cancelled = true; setDetallesComprobanteUrl(null); };
+  }, [pagoDetalles?.id, pagoDetalles?.archivos?.url]);
 
   const cargarDatos = async (abortRef?: React.MutableRefObject<boolean>) => {
     const ref = abortRef ?? { current: false };
@@ -212,6 +268,7 @@ const AdminPagosPage = () => {
         aplicar_a_todos: false,
       });
       setSelectedResidentes([]);
+      setBusquedaUsuariosModal('');
       await cargarDatos();
     } catch (err: any) {
       console.error('Error creando pagos masivos:', err);
@@ -219,6 +276,13 @@ const AdminPagosPage = () => {
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleVerDetallesPago = (pago: Pago) => {
+    setPagoDetallesId(pago.id);
+    setShowDetallesModal(true);
+    setPagoDetalles(null);
+    setDetallesComprobanteUrl(null);
   };
 
   const handleEditarPago = (pago: Pago) => {
@@ -336,7 +400,7 @@ const AdminPagosPage = () => {
       <div className="flex justify-between items-center mb-6">
         <div>
           <h1 className="text-2xl lg:text-3xl font-bold text-gray-800">
-            Gestión de Pagos
+            Gestión de Cuotas
           </h1>
           <p className="text-sm text-gray-500 mt-1">
             Historial de todos los pagos existentes
@@ -347,7 +411,7 @@ const AdminPagosPage = () => {
           className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium flex items-center gap-2"
         >
           <FaPlus />
-          Crear Pagos Masivos
+          Crear Cuotas Masivas
         </button>
       </div>
 
@@ -475,7 +539,15 @@ const AdminPagosPage = () => {
                         : 'N/A'}
                     </td>
                     <td className="px-4 py-3">
-                      <div className="flex gap-2">
+                      <div className="flex gap-2 flex-wrap">
+                        <button
+                          onClick={() => handleVerDetallesPago(pago)}
+                          className="px-3 py-1 bg-blue-500 text-white rounded text-xs hover:bg-blue-600 transition-colors flex items-center gap-1"
+                          title="Ver detalles del pago"
+                        >
+                          <FaEye />
+                          Ver detalles
+                        </button>
                         <button
                           onClick={() => handleEditarPago(pago)}
                           className="px-3 py-1 bg-yellow-500 text-white rounded text-xs hover:bg-yellow-600 transition-colors flex items-center gap-1"
@@ -522,7 +594,7 @@ const AdminPagosPage = () => {
       {showCreateModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 overflow-y-auto">
           <div className="bg-white rounded-lg p-6 max-w-2xl w-full max-h-[90vh] overflow-y-auto">
-            <h2 className="text-2xl font-bold text-gray-900 mb-4">Crear Pagos Masivos</h2>
+            <h2 className="text-2xl font-bold text-gray-900 mb-4">Crear Cuotas Masivas</h2>
             
             <form onSubmit={handleCrearPagosMasivos} className="space-y-4">
               {/* Concepto */}
@@ -687,8 +759,22 @@ const AdminPagosPage = () => {
                     <span className="text-gray-900">Usuarios específicos</span>
                   </label>
                   {formData.tipoAplicacion === 'usuarios' && (
-                    <div className="ml-6 max-h-48 overflow-y-auto border border-gray-300 rounded-lg p-2">
-                      {residentes.map(residente => (
+                    <div className="ml-6 space-y-2">
+                      <input
+                        type="text"
+                        placeholder="Buscar por nombre o correo..."
+                        value={busquedaUsuariosModal}
+                        onChange={(e) => setBusquedaUsuariosModal(e.target.value)}
+                        className="w-full bg-white text-gray-900 border border-gray-300 p-2 rounded focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
+                      />
+                      <div className="max-h-48 overflow-y-auto border border-gray-300 rounded-lg p-2">
+                        {(busquedaUsuariosModal.trim()
+                          ? residentes.filter(r =>
+                              (r.nombre || '').toLowerCase().includes(busquedaUsuariosModal.trim().toLowerCase()) ||
+                              (r.correo || '').toLowerCase().includes(busquedaUsuariosModal.trim().toLowerCase())
+                            )
+                          : residentes
+                        ).map(residente => (
                         <label key={residente.id} className="flex items-center gap-2 p-2 hover:bg-gray-50 cursor-pointer">
                           <input
                             type="checkbox"
@@ -704,7 +790,8 @@ const AdminPagosPage = () => {
                           />
                           <span className="text-gray-900 text-sm">{residente.nombre} ({residente.correo})</span>
                         </label>
-                      ))}
+                        ))}
+                      </div>
                     </div>
                   )}
                 </div>
@@ -734,6 +821,7 @@ const AdminPagosPage = () => {
                       aplicar_a_todos: false,
                     });
                     setSelectedResidentes([]);
+                    setBusquedaUsuariosModal('');
                   }}
                   className="flex-1 px-4 py-2 bg-gray-300 text-gray-700 rounded-lg hover:bg-gray-400 transition-colors font-medium"
                 >
@@ -897,6 +985,69 @@ const AdminPagosPage = () => {
       )}
 
       {/* Modal de confirmación de eliminación */}
+      {/* Modal Detalles del pago */}
+      {showDetallesModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 overflow-y-auto">
+          <div className="bg-white rounded-lg p-6 max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+            <h2 className="text-xl font-bold text-gray-900 mb-4">Detalles del pago</h2>
+            {!pagoDetalles ? (
+              <p className="text-gray-600">Cargando...</p>
+            ) : (
+              <div className="space-y-4">
+                <div><span className="font-medium text-gray-700">Concepto:</span> {pagoDetalles.concepto}</div>
+                <div><span className="font-medium text-gray-700">Monto:</span> {formatMonto(getMontoDisplay(pagoDetalles, tasaActual))}</div>
+                <div><span className="font-medium text-gray-700">Tipo:</span> {pagoDetalles.tipo}</div>
+                <div><span className="font-medium text-gray-700">Estado:</span> {pagoDetalles.estado}</div>
+                <div><span className="font-medium text-gray-700">Fecha vencimiento:</span> {pagoDetalles.fecha_vencimiento ? new Date(pagoDetalles.fecha_vencimiento).toLocaleDateString('es-ES') : 'N/A'}</div>
+                <div><span className="font-medium text-gray-700">Fecha pago:</span> {pagoDetalles.fecha_pago ? new Date(pagoDetalles.fecha_pago).toLocaleDateString('es-ES') : 'N/A'}</div>
+                {pagoDetalles.usuarios && (
+                  <div><span className="font-medium text-gray-700">Usuario:</span> {pagoDetalles.usuarios.nombre} ({pagoDetalles.usuarios.correo})</div>
+                )}
+                {pagoDetalles.observaciones && (
+                  <div><span className="font-medium text-gray-700">Observaciones:</span> {pagoDetalles.observaciones}</div>
+                )}
+                {pagoDetalles.archivos?.url && (
+                  <div>
+                    <span className="font-medium text-gray-700 block mb-1">Comprobante:</span>
+                    {detallesComprobanteUrl ? (
+                      detallesComprobanteMime && detallesComprobanteMime.toLowerCase().includes('pdf') ? (
+                        <iframe
+                          src={detallesComprobanteUrl}
+                          title="Comprobante"
+                          className="w-full max-h-[70vh] min-h-[300px] rounded-lg border border-gray-200"
+                        />
+                      ) : (
+                        <img
+                          src={detallesComprobanteUrl}
+                          alt="Comprobante"
+                          className="max-w-full max-h-[70vh] rounded-lg border border-gray-200 object-contain"
+                        />
+                      )
+                    ) : (
+                      <span className="text-gray-500 text-sm">Preparando comprobante...</span>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+            <div className="mt-6">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowDetallesModal(false);
+                  setPagoDetallesId(null);
+                  setPagoDetalles(null);
+                  setDetallesComprobanteUrl(null);
+                }}
+                className="px-4 py-2 bg-gray-300 text-gray-700 rounded-lg hover:bg-gray-400 transition-colors font-medium"
+              >
+                Cerrar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showDeleteConfirm && pagoSeleccionado && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-lg p-6 max-w-md w-full">

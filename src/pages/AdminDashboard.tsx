@@ -79,7 +79,7 @@ export default function AdminLayout() {
       notis: { count: usuariosPendientesCount } 
     },
     { to: '/admin/condominios', label: 'Condominios', icon: <FaBuilding /> },
-    { to: '/admin/pagos', label: 'Pagos Masivos', icon: <FaMoneyBillWave /> },
+    { to: '/admin/pagos', label: 'Cuotas Masivas', icon: <FaMoneyBillWave /> },
     { to: '/admin/validacion-pagos', label: 'Validación', icon: <FaCheckCircle /> },
     { to: '/admin/gestion-eventos-espacios', label: 'Eventos y Espacios', icon: <FaCalendarAlt /> },
     { to: '/admin/reportes', label: 'Reportes', icon: <FaFileAlt />, notis: { morosos: morososCount, pendientes: pendientesCount } },

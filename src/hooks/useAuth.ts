@@ -39,11 +39,10 @@ export const useAuth = () => {
     }
   }, []);
 
-  // Refrescar estado del usuario desde la BD después del primer paint (no bloquea carga inicial)
+  // Refrescar estado del usuario (ej. Moroso) desde la BD al cargar sesión
   useEffect(() => {
     if (!user?.id || !isConfigured) return;
-    const id = setTimeout(() => refreshUserStatus(), 0);
-    return () => clearTimeout(id);
+    refreshUserStatus();
   }, [user?.id, isConfigured]);
 
   // Listener para cambios en localStorage

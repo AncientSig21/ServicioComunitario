@@ -71,6 +71,9 @@ export const PagosPage = () => {
   const [showPagoRestanteModal, setShowPagoRestanteModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [showDetallesModal, setShowDetallesModal] = useState(false);
+  const [comprobanteDisplayUrl, setComprobanteDisplayUrl] = useState<string | null>(null);
+  const [comprobanteDisplayMime, setComprobanteDisplayMime] = useState<string | null>(null);
+  const comprobanteDisplayBlobRef = useRef<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [abonoDisponible, setAbonoDisponible] = useState<number>(0);
@@ -245,16 +248,16 @@ export const PagosPage = () => {
       setPagos(pagosFiltrados);
 
       try {
-        const [abono, totalDesdePagos] = await Promise.all([
+        const [abono, totalDesdeUsuario] = await Promise.all([
           obtenerAbonosDisponibles(user.id),
-          obtenerTotalPagadoDesdePagos(user.id),
+          obtenerTotalPagadoUsuario(user.id),
         ]);
-        // Si la suma desde pagos falla o es null, usar el valor de usuarios.total_pagado (ya guardado en la BD).
-        let totalParaMostrar = totalDesdePagos;
+        // Opción anterior: usar usuarios.total_pagado como fuente principal. Si es null, respaldo con suma desde pagos.
+        let totalParaMostrar = totalDesdeUsuario;
         if (totalParaMostrar === null || totalParaMostrar === undefined) {
-          const totalDesdeUsuario = await obtenerTotalPagadoUsuario(user.id);
-          if (totalDesdeUsuario !== null && totalDesdeUsuario !== undefined) {
-            totalParaMostrar = totalDesdeUsuario;
+          const totalDesdePagos = await obtenerTotalPagadoDesdePagos(user.id);
+          if (totalDesdePagos !== null && totalDesdePagos !== undefined) {
+            totalParaMostrar = totalDesdePagos;
           }
         }
         if (!ref.current) {
@@ -312,6 +315,43 @@ export const PagosPage = () => {
       window.history.replaceState({}, '', '/pagos');
     }
   }, [pagoIdMorosoFromState, user?.id, pagos, tasaPagos]);
+
+  // Resolver comprobante para mostrar en la misma página (evitar enlace que deja pantalla en blanco)
+  useEffect(() => {
+    const url = showDetallesModal ? pagoSeleccionado?.comprobante_url : null;
+    if (comprobanteDisplayBlobRef.current) {
+      URL.revokeObjectURL(comprobanteDisplayBlobRef.current);
+      comprobanteDisplayBlobRef.current = null;
+    }
+    setComprobanteDisplayUrl(null);
+    setComprobanteDisplayMime(null);
+    if (!url) return;
+    if (url.startsWith('data:')) {
+      try {
+        const mime = url.match(/^data:([^;]+);/)?.[1] || 'image/jpeg';
+        const base64 = url.split(',')[1];
+        if (base64) {
+          const binary = atob(base64);
+          const bytes = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+          const blob = new Blob([bytes], { type: mime });
+          const blobUrl = URL.createObjectURL(blob);
+          comprobanteDisplayBlobRef.current = blobUrl;
+          setComprobanteDisplayUrl(blobUrl);
+          setComprobanteDisplayMime(mime);
+        } else {
+          setComprobanteDisplayUrl(url);
+          setComprobanteDisplayMime(mime);
+        }
+      } catch {
+        setComprobanteDisplayUrl(url);
+        setComprobanteDisplayMime(null);
+      }
+      return;
+    }
+    setComprobanteDisplayUrl(url);
+    setComprobanteDisplayMime(null);
+  }, [showDetallesModal, pagoSeleccionado?.id, pagoSeleccionado?.comprobante_url]);
 
   const formatFecha = (fecha: string) => {
     const date = new Date(fecha);
@@ -467,8 +507,8 @@ export const PagosPage = () => {
       // 3. Si el pago fue creado por administrador: actualizar el mismo pago (no crear uno nuevo).
       // Así solo existe un registro; el admin lo valida y queda completado o rechazado.
       if (pagoSeleccionado.creado_por_admin) {
-        const montoIngresado = parseFloat(formPago.monto);
-        const montoTotal = getMontoDisplay(pagoSeleccionado, tasaPagos);
+        // Usar el mayor entre getMontoDisplay (puede usar monto_usd*tasa) y monto en Bs, para no subestimar la cuota y limitar el abono aplicado (ej. 182.50 en vez de 1851.27)
+        const montoTotal = Math.max(getMontoDisplay(pagoSeleccionado, tasaPagos), pagoSeleccionado.monto || 0);
         let montoActualPagado = pagoSeleccionado.abono || pagoSeleccionado.monto_pagado || 0;
         const restanteInicial = montoTotal - montoActualPagado;
 
@@ -481,13 +521,17 @@ export const PagosPage = () => {
         }
 
         const restanteDespuesDeAbono = montoTotal - montoActualPagado;
-        let montoAbono = montoIngresado; // Monto que paga con comprobante
+        // Cuando "Usar mi abono" está marcado, el campo muestra el excedente (abono aplicado); el usuario no paga ese monto con comprobante, solo aplica abono. Monto con comprobante = 0 para no sobrescribir con el total de la cuota.
+        const montoConComprobanteReal = usarAbonoEnPago && abonoAplicadoDelUsuario > 0
+          ? 0
+          : parseFloat(formPago.monto);
+        let montoAbono = montoConComprobanteReal; // Monto que paga con comprobante
         let excedente = 0;
         
-        if (montoIngresado > restanteDespuesDeAbono) {
-          excedente = montoIngresado - restanteDespuesDeAbono;
+        if (montoConComprobanteReal > restanteDespuesDeAbono) {
+          excedente = montoConComprobanteReal - restanteDespuesDeAbono;
           montoAbono = restanteDespuesDeAbono;
-          alert(`El monto ingresado (${formatMonto(montoIngresado)}) excede el restante de la cuota (${formatMonto(restanteDespuesDeAbono)}).\n\n` +
+          alert(`El monto ingresado (${formatMonto(montoConComprobanteReal)}) excede el restante de la cuota (${formatMonto(restanteDespuesDeAbono)}).\n\n` +
                 `Se registrará como pago completo con excedente: ${formatMonto(restanteDespuesDeAbono)} al pago actual y ${formatMonto(excedente)} de excedente (guardado solo para este pago; no se guarda en el recuadro de abono).`);
         }
         
@@ -500,7 +544,10 @@ export const PagosPage = () => {
         // Abono: solo el monto que cubre la cuota (hasta montoTotal). El excedente no va en abono; se guarda en columna excedente.
         const nuevoAbono = Math.min(montoActualPagado + montoAbono, montoTotal);
         const observacionesTexto = formPago.descripcion?.trim() || '';
-        const abonoUsd = formPago.useMontoUsd && formPago.montoUsd ? parseFloat(formPago.montoUsd) : null;
+        // Cuando "Usar mi abono" está marcado, el campo muestra el excedente; el USD a registrar es el del monto real con comprobante (montoAbono)
+        const abonoUsd = (usarAbonoEnPago && abonoAplicadoDelUsuario > 0)
+          ? (formPago.useMontoUsd && tasaPagos > 0 && montoAbono > 0 ? montoAbono / tasaPagos : null)
+          : (formPago.useMontoUsd && formPago.montoUsd ? parseFloat(formPago.montoUsd) : null);
         const textoMontoAplicado = (abonoUsd != null && abonoUsd > 0)
           ? `Monto aplicado a esta cuota: ${formatMontoUsd(abonoUsd)} (${formatMonto(montoAbono)} Bs)`
           : `Monto aplicado a esta cuota: ${formatMonto(montoAbono)}`;
@@ -604,7 +651,7 @@ export const PagosPage = () => {
         const esPagoRestante = concepto.includes('Restante');
         
         if (esPagoRestante) {
-          const montoRestantePago = getMontoDisplay(pagoSeleccionado, tasaPagos);
+          const montoRestantePago = Math.max(getMontoDisplay(pagoSeleccionado, tasaPagos), pagoSeleccionado.monto || 0);
           const abonoActualRestante = pagoSeleccionado.abono ?? pagoSeleccionado.monto_pagado ?? 0;
           const restanteAPagar = montoRestantePago - abonoActualRestante;
 
@@ -614,8 +661,10 @@ export const PagosPage = () => {
             abonoAplicadoRestante = Math.min(abonoDisponible, restanteAPagar);
             await aplicarAbonoAPagoEspecifico(user.id, pagoSeleccionado.id, abonoAplicadoRestante);
           }
-
-          const montoConComprobante = parseFloat(formPago.monto || '0');
+          // Cuando "Usar mi abono" está marcado, el campo muestra el excedente (abono aplicado); el usuario no paga ese monto con comprobante. Monto con comprobante = 0 para no sobrescribir con el total.
+          const montoConComprobante = (usarAbonoEnPago && abonoAplicadoRestante > 0)
+            ? 0
+            : parseFloat(formPago.monto || '0');
           const nuevoAbonoRestante = abonoActualRestante + abonoAplicadoRestante + montoConComprobante;
 
           // Actualizar el pago restante; mantener estado pendiente hasta que el administrador valide.
@@ -782,15 +831,16 @@ export const PagosPage = () => {
     }
   }, 0);
 
-  // Total pagado: solo pagos VALIDADOS (estado = 'pagado'). Suma abono + excedente (monto realmente pagado).
+  // Total pagado: suma abono + excedente de TODOS los pagos (incl. pendientes) para que el abono aplicado con "Usar mi abono" se refleje de inmediato.
   const totalPagadoCalculado = pagosCompletos.reduce((sum, p) => {
-    if (p.estado !== 'pagado') return sum;
     const abono = p.abono !== undefined && p.abono !== null ? Number(p.abono) : (p.monto_pagado != null ? Number(p.monto_pagado) : 0);
     const excedente = p.excedente != null && p.excedente > 0 ? Number(p.excedente) : 0;
     return sum + (abono > 0 ? abono : 0) + excedente;
   }, 0);
-  // Preferir total desde BD; si falla o es null, usar total calculado desde lista (abono + excedente por pago).
-  const totalPagado = totalPagadoBD !== null && totalPagadoBD !== undefined ? totalPagadoBD : totalPagadoCalculado;
+  // Opción anterior: preferir usuarios.total_pagado (totalPagadoBD); si es null, usar total calculado desde la lista.
+  const totalPagado = (totalPagadoBD != null && totalPagadoBD !== undefined)
+    ? totalPagadoBD
+    : totalPagadoCalculado;
   // Si el usuario pulsó "Reiniciar total", mostrar 0 Bs y 0 USD en la caja (solo pantalla; la BD no cambia).
   const totalPagadoAMostrar = pagadoMostrarCero ? 0 : totalPagado;
   const totalPagadoUsd = tasaPagos > 0 ? Math.round((totalPagadoAMostrar / tasaPagos) * 100) / 100 : 0;
@@ -866,7 +916,18 @@ export const PagosPage = () => {
           <div className="bg-white rounded-lg shadow-md p-6 border-l-4 border-green-500">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm text-gray-600 mb-1">Total Pagado</p>
+                <p className="text-sm text-gray-600 mb-1 flex items-center gap-2">
+                  Total Pagado
+                  <button
+                    type="button"
+                    onClick={() => cargarPagos()}
+                    disabled={loading}
+                    className="text-xs text-indigo-600 hover:text-indigo-800 underline disabled:opacity-50"
+                    title="Actualizar total y lista de pagos"
+                  >
+                    Actualizar
+                  </button>
+                </p>
                 <p className="text-2xl font-bold text-green-600">
                   {formatMonto(totalPagadoAMostrar)}
                   {tasaPagos > 0 && (
@@ -1349,9 +1410,11 @@ export const PagosPage = () => {
 
                 {/* Opción: Usar mi abono disponible (solo para cuotas admin o Restante) */}
                 {pagoSeleccionado && (pagoSeleccionado.creado_por_admin || (pagoSeleccionado.concepto || '').includes('Restante')) && abonoDisponible > 0 && (() => {
-                  const montoTotalPago = getMontoDisplay(pagoSeleccionado, tasaPagos);
+                  // Usar el mayor entre getMontoDisplay y monto en Bs para no subestimar la cuota (evitar abonoAUsar = 182.50 cuando la cuota es 1851.27)
+                  const montoTotalPago = Math.max(getMontoDisplay(pagoSeleccionado, tasaPagos), pagoSeleccionado.monto || 0);
                   const restantePago = montoTotalPago - (pagoSeleccionado.abono ?? pagoSeleccionado.monto_pagado ?? 0);
                   if (restantePago <= 0) return null;
+                  // Aplicar el abono disponible en su totalidad (hasta cubrir el restante) para cancelar la cuota
                   const abonoAUsar = Math.min(abonoDisponible, restantePago);
                   const montoConComprobante = Math.max(0, restantePago - abonoAUsar);
                   return (
@@ -1363,9 +1426,12 @@ export const PagosPage = () => {
                           onChange={(e) => {
                             const checked = e.target.checked;
                             setUsarAbonoEnPago(checked);
+                            // Mostrar en el campo "Monto a pagar con comprobante" el excedente (abono) que se aplicará, no el resto a pagar
+                            const montoBs = checked ? abonoAUsar : restantePago;
                             setFormPago(prev => ({
                               ...prev,
-                              monto: checked ? montoConComprobante.toFixed(2) : restantePago.toFixed(2),
+                              monto: montoBs.toFixed(2),
+                              montoUsd: tasaPagos > 0 ? (montoBs / tasaPagos).toFixed(2) : prev.montoUsd,
                             }));
                           }}
                           className="mt-1 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
@@ -1376,7 +1442,7 @@ export const PagosPage = () => {
                       </label>
                       {usarAbonoEnPago && (
                         <p className="text-xs text-blue-800 mt-2">
-                          Se aplicarán {formatMonto(abonoAUsar)} de tu abono. Monto a pagar con comprobante: {formatMonto(montoConComprobante)}.
+                          Se aplicará tu abono ({formatMonto(abonoAUsar)}) a esta cuota. Monto restante a pagar con comprobante: {formatMonto(montoConComprobante)}.
                         </p>
                       )}
                     </div>
@@ -2162,14 +2228,23 @@ export const PagosPage = () => {
                     <label className="block text-sm font-medium text-gray-700 mb-1">
                       Comprobante de Pago
                     </label>
-                    <a
-                      href={pagoSeleccionado.comprobante_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-blue-600 hover:text-blue-800 underline bg-blue-50 p-3 rounded-lg inline-block"
-                    >
-                      Ver Comprobante
-                    </a>
+                    {comprobanteDisplayUrl ? (
+                      comprobanteDisplayMime && comprobanteDisplayMime.toLowerCase().includes('pdf') ? (
+                        <iframe
+                          src={comprobanteDisplayUrl}
+                          title="Comprobante"
+                          className="w-full max-h-[70vh] min-h-[300px] rounded-lg border border-gray-200"
+                        />
+                      ) : (
+                        <img
+                          src={comprobanteDisplayUrl}
+                          alt="Comprobante de pago"
+                          className="max-w-full max-h-[70vh] rounded-lg border border-gray-200 object-contain"
+                        />
+                      )
+                    ) : (
+                      <span className="text-gray-500 text-sm">Preparando comprobante...</span>
+                    )}
                   </div>
                 )}
 

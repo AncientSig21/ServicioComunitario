@@ -1,11 +1,9 @@
 import { useEffect, useState } from 'react';
 import { useAuth } from '../hooks/useAuth';
-import { fetchEspaciosComunes, eliminarEspacioComun, actualizarEspacioComun, fetchSolicitudesMantenimiento, actualizarSolicitudMantenimiento } from '../services/bookService';
+import { fetchEspaciosComunes, eliminarEspacioComun, actualizarEspacioComun, fetchSolicitudesMantenimiento, actualizarSolicitudMantenimiento, fetchAnuncios, actualizarAnuncio, eliminarAnuncio, crearNotificacion } from '../services/bookService';
 import { FaEdit, FaTrash, FaCalendarAlt, FaBuilding, FaSearch, FaFilter, FaWrench, FaImages } from 'react-icons/fa';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ProgressModal } from '../components/maintenance/ProgressModal';
-
-const MOCK_DB_KEY = 'mockDatabase_condominio';
 
 interface Evento {
   id: number;
@@ -68,6 +66,7 @@ export const AdminGestionEventosEspaciosPage = () => {
   const [espacioEditando, setEspacioEditando] = useState<EspacioComun | null>(null);
   const [quitarImagenEspacio, setQuitarImagenEspacio] = useState(false);
   const [eliminandoImagenEspacioId, setEliminandoImagenEspacioId] = useState<number | null>(null);
+  const [nuevaImagenEspacio, setNuevaImagenEspacio] = useState<string | null>(null);
   const [formEspacio, setFormEspacio] = useState({
     nombre: '',
     descripcion: '',
@@ -94,20 +93,21 @@ export const AdminGestionEventosEspaciosPage = () => {
   const [solicitudAvancesId, setSolicitudAvancesId] = useState<number | null>(null);
   const [solicitudAvancesTitulo, setSolicitudAvancesTitulo] = useState('');
 
-  // Cargar eventos desde localStorage
-  const cargarEventos = () => {
+  const cargarEventos = async () => {
     try {
       setEventosLoading(true);
-      const db = JSON.parse(localStorage.getItem(MOCK_DB_KEY) || '{"anuncios": []}');
-      const todosLosAnuncios = db.anuncios || [];
-      
-      const eventosData = todosLosAnuncios
-        .filter((anuncio: any) => anuncio.categoria === 'evento')
-        .map((anuncio: any) => ({
-          ...anuncio,
-          estado: anuncio.estado || (anuncio.autor === 'Pendiente de aprobación' ? 'pendiente' : 'aprobado'),
-        }));
-
+      const rows = await fetchAnuncios(undefined, 'evento', true);
+      const eventosData: Evento[] = rows.map((r: any) => ({
+        id: r.id,
+        titulo: r.titulo || '',
+        contenido: r.contenido || '',
+        fecha: r.fecha_publicacion ? new Date(r.fecha_publicacion).toISOString().split('T')[0] : '',
+        categoria: 'evento',
+        autor: r.autor_usuario?.nombre || 'Pendiente de aprobación',
+        estado: r.activo ? 'aprobado' : 'pendiente',
+        usuario_id: r.autor_usuario_id,
+        usuario_nombre: r.autor_usuario?.nombre,
+      }));
       setEventos(eventosData);
     } catch (error) {
       console.error('Error cargando eventos:', error);
@@ -219,7 +219,7 @@ export const AdminGestionEventosEspaciosPage = () => {
     setShowEditEventoModal(true);
   };
 
-  const handleGuardarEvento = () => {
+  const handleGuardarEvento = async () => {
     if (!eventoEditando) return;
     if (!formEvento.titulo.trim() || !formEvento.contenido.trim()) {
       alert('Por favor completa todos los campos requeridos');
@@ -227,29 +227,14 @@ export const AdminGestionEventosEspaciosPage = () => {
     }
 
     try {
-      const db = JSON.parse(localStorage.getItem(MOCK_DB_KEY) || '{"anuncios": []}');
-      const anuncios = db.anuncios || [];
-      
-      const index = anuncios.findIndex((a: any) => 
-        a.id === eventoEditando.id && a.categoria === 'evento'
-      );
-
-      if (index !== -1) {
-        anuncios[index] = {
-          ...anuncios[index],
-          titulo: formEvento.titulo.trim(),
-          contenido: formEvento.contenido.trim(),
-          fecha: formEvento.fecha || anuncios[index].fecha,
-        };
-
-        db.anuncios = anuncios;
-        localStorage.setItem(MOCK_DB_KEY, JSON.stringify(db));
-        
-        alert('✅ Evento actualizado exitosamente');
-        setShowEditEventoModal(false);
-        setEventoEditando(null);
-        cargarEventos();
-      }
+      await actualizarAnuncio(eventoEditando.id, {
+        titulo: formEvento.titulo.trim(),
+        contenido: formEvento.contenido.trim(),
+      });
+      alert('✅ Evento actualizado exitosamente');
+      setShowEditEventoModal(false);
+      setEventoEditando(null);
+      await cargarEventos();
     } catch (error) {
       console.error('Error actualizando evento:', error);
       alert('Error al actualizar el evento');
@@ -266,20 +251,9 @@ export const AdminGestionEventosEspaciosPage = () => {
     if (!confirmacion) return;
 
     try {
-      const db = JSON.parse(localStorage.getItem(MOCK_DB_KEY) || '{"anuncios": []}');
-      const anuncios = db.anuncios || [];
-      
-      const anunciosFiltrados = anuncios.filter((anuncio: any) => 
-        !(anuncio.id === evento.id && anuncio.categoria === 'evento')
-      );
-
-      db.anuncios = anunciosFiltrados;
-      localStorage.setItem(MOCK_DB_KEY, JSON.stringify(db));
-
-      // Notificar al usuario si existe
+      await eliminarAnuncio(evento.id);
       if (evento.usuario_id) {
         try {
-          const { crearNotificacion } = await import('../services/bookService');
           await crearNotificacion(
             evento.usuario_id,
             'evento_eliminado',
@@ -292,9 +266,8 @@ export const AdminGestionEventosEspaciosPage = () => {
           console.error('Error enviando notificación:', notifError);
         }
       }
-
       alert('✅ Evento eliminado exitosamente');
-      cargarEventos();
+      await cargarEventos();
     } catch (error) {
       console.error('Error eliminando evento:', error);
       alert('Error al eliminar el evento');
@@ -306,6 +279,7 @@ export const AdminGestionEventosEspaciosPage = () => {
   const handleEditarEspacio = (espacio: EspacioComun) => {
     setEspacioEditando(espacio);
     setQuitarImagenEspacio(false);
+    setNuevaImagenEspacio(null);
     setFormEspacio({
       nombre: espacio.nombre,
       descripcion: espacio.descripcion || '',
@@ -347,20 +321,24 @@ export const AdminGestionEventosEspaciosPage = () => {
         .map(item => item.trim())
         .filter(item => item.length > 0);
 
+      const imagenPayload =
+        nuevaImagenEspacio ? { imagen_url: nuevaImagenEspacio } : quitarImagenEspacio ? { imagen_url: null } : {};
       await actualizarEspacioComun(espacioEditando.id, user.id, {
         nombre: formEspacio.nombre.trim(),
         descripcion: formEspacio.descripcion.trim() || null,
         capacidad: formEspacio.capacidad ? parseInt(formEspacio.capacidad) : null,
         horarios: formEspacio.horarios.trim() || null,
         equipamiento: equipamientoArray.length > 0 ? equipamientoArray : null,
-        ...(quitarImagenEspacio ? { imagen_url: null } : {}),
+        ...imagenPayload,
       });
       if (quitarImagenEspacio) setQuitarImagenEspacio(false);
+      if (nuevaImagenEspacio) setNuevaImagenEspacio(null);
 
       alert('✅ Espacio común actualizado exitosamente');
       setShowEditEspacioModal(false);
       setEspacioEditando(null);
       setQuitarImagenEspacio(false);
+      setNuevaImagenEspacio(null);
       await cargarEspacios();
     } catch (error: any) {
       console.error('Error actualizando espacio:', error);
@@ -962,23 +940,59 @@ export const AdminGestionEventosEspaciosPage = () => {
                       className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
                     />
                   </div>
-                  {espacioEditando.imagen_url && !quitarImagenEspacio && (
+                  {(espacioEditando.imagen_url || nuevaImagenEspacio) && !quitarImagenEspacio && (
                     <div className="rounded-lg border border-gray-200 p-3 bg-gray-50">
-                      <p className="text-sm font-medium text-gray-700 mb-2">Imagen actual del espacio</p>
+                      <p className="text-sm font-medium text-gray-700 mb-2">
+                        {nuevaImagenEspacio ? 'Nueva imagen (se guardará al guardar cambios)' : 'Imagen actual del espacio'}
+                      </p>
                       <img
-                        src={espacioEditando.imagen_url}
+                        src={nuevaImagenEspacio || espacioEditando.imagen_url || ''}
                         alt={espacioEditando.nombre}
                         className="w-full max-h-48 object-contain rounded-lg"
                       />
-                      <button
-                        type="button"
-                        onClick={() => setQuitarImagenEspacio(true)}
-                        className="mt-2 inline-flex items-center gap-2 px-3 py-2 text-sm font-medium text-red-700 bg-red-50 border border-red-200 rounded-lg hover:bg-red-100 transition-colors"
-                        title="Quitar la imagen al guardar"
-                      >
-                        <FaTrash className="w-4 h-4" />
-                        Eliminar imagen
-                      </button>
+                      {!nuevaImagenEspacio && (
+                        <button
+                          type="button"
+                          onClick={() => setQuitarImagenEspacio(true)}
+                          className="mt-2 inline-flex items-center gap-2 px-3 py-2 text-sm font-medium text-red-700 bg-red-50 border border-red-200 rounded-lg hover:bg-red-100 transition-colors"
+                          title="Quitar la imagen al guardar"
+                        >
+                          <FaTrash className="w-4 h-4" />
+                          Eliminar imagen
+                        </button>
+                      )}
+                      {nuevaImagenEspacio && (
+                        <button
+                          type="button"
+                          onClick={() => setNuevaImagenEspacio(null)}
+                          className="mt-2 inline-flex items-center gap-2 px-3 py-2 text-sm font-medium text-gray-700 bg-gray-100 border border-gray-300 rounded-lg hover:bg-gray-200 transition-colors"
+                        >
+                          Quitar nueva imagen
+                        </button>
+                      )}
+                    </div>
+                  )}
+                  {!nuevaImagenEspacio && (
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        Añadir o cambiar foto del espacio
+                      </label>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (!file) return;
+                          const reader = new FileReader();
+                          reader.onload = () => {
+                            const dataUrl = reader.result as string;
+                            if (dataUrl) setNuevaImagenEspacio(dataUrl);
+                          };
+                          reader.readAsDataURL(file);
+                          e.target.value = '';
+                        }}
+                        className="w-full text-sm text-gray-600 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100"
+                      />
                     </div>
                   )}
                   {quitarImagenEspacio && (
@@ -993,6 +1007,7 @@ export const AdminGestionEventosEspaciosPage = () => {
                       setShowEditEspacioModal(false);
                       setEspacioEditando(null);
                       setQuitarImagenEspacio(false);
+                      setNuevaImagenEspacio(null);
                     }}
                     className="px-4 py-2 text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
                   >

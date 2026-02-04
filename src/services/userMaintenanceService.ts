@@ -4,6 +4,8 @@
  */
 
 import { supabase } from '../supabase/client';
+import { isSupabaseConfigured } from './authService';
+import { ejecutarActualizarUsuariosMorosos } from './bookService';
 
 /**
  * Corrige el estado de todos los usuarios existentes basándose en sus pagos
@@ -27,15 +29,20 @@ export const corregirEstadosUsuarios = async (): Promise<{
     let errores = 0;
 
     // 1. Obtener todos los usuarios (excepto administradores)
-    const { data: usuarios, error: usuariosError } = await supabase
+    // El enum role_enum solo admite: admin, propietario, residente, conserje, invitado (no "Administrador")
+    const { data: usuariosRaw, error: usuariosError } = await supabase
       .from('usuarios')
       .select('id, nombre, Estado, rol')
-      .neq('rol', 'admin')
-      .neq('rol', 'Administrador');
+      .neq('rol', 'admin');
 
     if (usuariosError) {
       throw new Error(`Error obteniendo usuarios: ${usuariosError.message}`);
     }
+
+    // Excluir también rol legacy "Administrador" si viniera como texto (filtrar en JS)
+    const usuarios = (usuariosRaw || []).filter(
+      (u: { rol?: string | null }) => (u.rol || '').toLowerCase() !== 'administrador'
+    );
 
     if (!usuarios || usuarios.length === 0) {
       return {
@@ -48,30 +55,44 @@ export const corregirEstadosUsuarios = async (): Promise<{
 
     console.log(`🔍 Procesando ${usuarios.length} usuarios...`);
 
+    // Fecha de hoy en YYYY-MM-DD (fecha local, no UTC) para comparar con fecha_vencimiento
+    const now = new Date();
+    const hoy = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+
     // 2. Para cada usuario, verificar sus pagos
     for (const usuario of usuarios) {
       try {
-        // Verificar si tiene pagos vencidos (estos determinan si es moroso)
-        const { data: pagosVencidos } = await supabase
+        // Traer pagos pendientes o vencidos del usuario y filtrar en JS por fecha vencida
+        const { data: pagosPendientesVencidos, error: errorPagos } = await supabase
           .from('pagos')
-          .select('id')
+          .select('id, fecha_vencimiento')
           .eq('usuario_id', usuario.id)
-          .eq('estado', 'vencido')
-          .limit(1);
+          .in('estado', ['pendiente', 'vencido']);
 
-        // Si tiene pagos vencidos, debe ser 'Moroso'
-        // Si no tiene pagos vencidos, debe ser 'Activo' (aunque tenga pagos pendientes, aún no son deudas)
-        const estadoCorrecto = (pagosVencidos && pagosVencidos.length > 0) ? 'Moroso' : 'Activo';
-        const estadoAnterior = usuario.Estado ?? usuario.estado ?? 'Activo';
+        if (errorPagos) {
+          console.warn(`⚠️ Error obteniendo pagos del usuario ${usuario.id}:`, errorPagos.message);
+        }
 
-        // Solo actualizar si el estado es diferente (columna en BD: Estado con mayúscula)
+        const tieneCuotaVencida = (pagosPendientesVencidos || []).some((p: { fecha_vencimiento?: string | null }) => {
+          const fv = p.fecha_vencimiento;
+          if (!fv) return false;
+          const fvStr = typeof fv === 'string' ? fv.split('T')[0] : fv;
+          return fvStr < hoy;
+        });
+
+        const estadoCorrecto = tieneCuotaVencida ? 'Moroso' : 'Activo';
+        const u = usuario as { Estado?: string; estado?: string };
+        const estadoAnterior = u.Estado ?? u.estado ?? 'Activo';
+
         if (estadoAnterior !== estadoCorrecto) {
+          // Actualizar la columna que exista en la BD (Estado o estado)
+          const updatePayload: Record<string, unknown> = { updated_at: new Date().toISOString() };
+          if (u.Estado !== undefined) updatePayload.Estado = estadoCorrecto;
+          else updatePayload.estado = estadoCorrecto;
+
           const { error: updateError } = await supabase
             .from('usuarios')
-            .update({ 
-              Estado: estadoCorrecto,
-              updated_at: new Date().toISOString()
-            })
+            .update(updatePayload)
             .eq('id', usuario.id);
 
           if (updateError) {
@@ -141,14 +162,22 @@ export const ejecutarMantenimientoUsuarios = async (): Promise<{
   pagos: Awaited<ReturnType<typeof limpiarPagosAutomaticos>>;
 }> => {
   console.log('🔄 Iniciando mantenimiento de usuarios...');
-  
+
+  // 1. Llamar primero a la función de BD que marca morosos (no depende de RLS en la app)
+  try {
+    await ejecutarActualizarUsuariosMorosos();
+    console.log('   ✓ Función de BD actualizar_usuarios_morosos() ejecutada (cuotas vencidas → Moroso)');
+  } catch (e) {
+    console.warn('   ⚠ No se pudo ejecutar actualizar_usuarios_morosos (¿función creada en la BD?):', e);
+  }
+
   const estados = await corregirEstadosUsuarios();
   const pagos = await limpiarPagosAutomaticos();
-  
+
   console.log('✅ Mantenimiento completado');
   console.log(`   - Estados corregidos: ${estados.actualizados}/${estados.total}`);
   console.log(`   - Errores: ${estados.errores}`);
-  
+
   return {
     estados,
     pagos

@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
+import { fetchForumTemas, crearForumTema, fetchForumComentariosByTema, crearForumComentario } from '../services/bookService';
 
 interface ForumComment {
   id: number;
@@ -19,7 +20,7 @@ interface ForumTopic {
   createdAt: string;
 }
 
-const FORUM_STORAGE_KEY = 'forum_topics_ciudad_colonial';
+const FORUM_POLL_INTERVAL_MS = 45000; // Refrescar temas y comentarios cada 45 segundos
 
 export const BookPages = () => {
   const location = useLocation();
@@ -31,37 +32,104 @@ export const BookPages = () => {
   const [comments, setComments] = useState<ForumComment[]>([]);
   const [selectedTopicId, setSelectedTopicId] = useState<number | null>(null);
 
+  const [forumLoading, setForumLoading] = useState(true);
+  const [forumError, setForumError] = useState<string | null>(null);
+  const [savingTopic, setSavingTopic] = useState(false);
+  const [savingComment, setSavingComment] = useState(false);
+
   const [newTopicTitle, setNewTopicTitle] = useState('');
   const [newTopicContent, setNewTopicContent] = useState('');
   const [newCommentContent, setNewCommentContent] = useState('');
 
-  // Cargar datos desde localStorage al iniciar
-  useEffect(() => {
+  const loadTopics = useCallback(async () => {
+    setForumError(null);
     try {
-      const stored = localStorage.getItem(FORUM_STORAGE_KEY);
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        setTopics(parsed.topics || []);
-        setComments(parsed.comments || []);
-      }
-    } catch (error) {
-      console.warn('Error cargando foro desde localStorage:', error);
+      const rows = await fetchForumTemas();
+      setTopics(rows.map(r => ({
+        id: r.id,
+        categoryId: r.category_id,
+        title: r.title,
+        content: r.content,
+        author: r.author,
+        createdAt: r.created_at,
+      })));
+    } catch (e) {
+      console.warn('Error cargando temas del foro:', e);
+      setForumError('No se pudieron cargar los temas. Vuelve a intentar.');
+      setTopics([]);
+    } finally {
+      setForumLoading(false);
     }
   }, []);
 
-  // Guardar cambios en localStorage
-  const saveForumData = (updatedTopics: ForumTopic[], updatedComments: ForumComment[]) => {
-    setTopics(updatedTopics);
-    setComments(updatedComments);
-    try {
-      localStorage.setItem(
-        FORUM_STORAGE_KEY,
-        JSON.stringify({ topics: updatedTopics, comments: updatedComments })
-      );
-    } catch (error) {
-      console.warn('Error guardando foro en localStorage:', error);
+  useEffect(() => {
+    loadTopics();
+    const topicInterval = setInterval(() => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+        loadTopics();
+      }
+    }, FORUM_POLL_INTERVAL_MS);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') loadTopics();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      clearInterval(topicInterval);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [loadTopics]);
+
+  useEffect(() => {
+    if (selectedTopicId == null) {
+      setComments([]);
+      return;
     }
-  };
+    let cancelled = false;
+    setForumError(null);
+    fetchForumComentariosByTema(selectedTopicId).then(rows => {
+      if (!cancelled) {
+        setComments(rows.map(r => ({
+          id: r.id,
+          topicId: r.tema_id,
+          author: r.author,
+          content: r.content,
+          createdAt: r.created_at,
+        })));
+      }
+    }).catch(e => {
+      if (!cancelled) {
+        console.warn('Error cargando comentarios:', e);
+        setComments([]);
+      }
+    });
+    const refreshComments = () => {
+      fetchForumComentariosByTema(selectedTopicId).then(rows => {
+        if (!cancelled) {
+          setComments(rows.map(r => ({
+            id: r.id,
+            topicId: r.tema_id,
+            author: r.author,
+            content: r.content,
+            createdAt: r.created_at,
+          })));
+        }
+      }).catch(() => {});
+    };
+    const commentInterval = setInterval(() => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+        refreshComments();
+      }
+    }, FORUM_POLL_INTERVAL_MS);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') refreshComments();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      cancelled = true;
+      clearInterval(commentInterval);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [selectedTopicId]);
 
   // Leer categoría activa desde la URL
   useEffect(() => {
@@ -128,7 +196,7 @@ export const BookPages = () => {
     ? comments.filter(c => c.topicId === currentTopic.id)
     : [];
 
-  const handleCreateTopic = () => {
+  const handleCreateTopic = async () => {
     if (!user) {
       alert('Debes iniciar sesión para crear un tema en el foro.');
       return;
@@ -142,24 +210,37 @@ export const BookPages = () => {
       return;
     }
 
-    const newId = topics.length > 0 ? Math.max(...topics.map(t => t.id)) + 1 : 1;
-    const newTopic: ForumTopic = {
-      id: newId,
-      categoryId: selectedCategoria,
-      title: newTopicTitle.trim(),
-      content: newTopicContent.trim(),
-      author: user.nombre,
-      createdAt: new Date().toISOString(),
-    };
-
-    const updatedTopics = [...topics, newTopic];
-    saveForumData(updatedTopics, comments);
-    setNewTopicTitle('');
-    setNewTopicContent('');
-    setSelectedTopicId(newId);
+    setSavingTopic(true);
+    setForumError(null);
+    try {
+      const created = await crearForumTema({
+        category_id: selectedCategoria,
+        title: newTopicTitle.trim(),
+        content: newTopicContent.trim(),
+        author: user.nombre || 'Usuario',
+        usuario_id: user.id,
+      });
+      const newTopic: ForumTopic = {
+        id: created.id,
+        categoryId: created.category_id,
+        title: created.title,
+        content: created.content,
+        author: created.author,
+        createdAt: created.created_at,
+      };
+      setTopics(prev => [newTopic, ...prev]);
+      setNewTopicTitle('');
+      setNewTopicContent('');
+      setSelectedTopicId(created.id);
+    } catch (e) {
+      console.warn('Error creando tema:', e);
+      setForumError('No se pudo publicar el tema. Vuelve a intentar.');
+    } finally {
+      setSavingTopic(false);
+    }
   };
 
-  const handleAddComment = () => {
+  const handleAddComment = async () => {
     if (!user) {
       alert('Debes iniciar sesión para comentar.');
       return;
@@ -170,18 +251,29 @@ export const BookPages = () => {
       return;
     }
 
-    const newId = comments.length > 0 ? Math.max(...comments.map(c => c.id)) + 1 : 1;
-    const newComment: ForumComment = {
-      id: newId,
-      topicId: currentTopic.id,
-      author: user.nombre,
-      content: newCommentContent.trim(),
-      createdAt: new Date().toISOString(),
-    };
-
-    const updatedComments = [...comments, newComment];
-    saveForumData(topics, updatedComments);
-    setNewCommentContent('');
+    setSavingComment(true);
+    setForumError(null);
+    try {
+      const created = await crearForumComentario({
+        tema_id: currentTopic.id,
+        author: user.nombre || 'Usuario',
+        content: newCommentContent.trim(),
+        usuario_id: user.id,
+      });
+      setComments(prev => [...prev, {
+        id: created.id,
+        topicId: created.tema_id,
+        author: created.author,
+        content: created.content,
+        createdAt: created.created_at,
+      }]);
+      setNewCommentContent('');
+    } catch (e) {
+      console.warn('Error creando comentario:', e);
+      setForumError('No se pudo publicar el comentario. Vuelve a intentar.');
+    } finally {
+      setSavingComment(false);
+    }
   };
 
   const formatDate = (iso: string) => {
@@ -230,6 +322,12 @@ export const BookPages = () => {
           ))}
         </div>
 
+        {forumError && (
+          <div className="mb-4 max-w-3xl mx-auto bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-sm text-red-700">
+            {forumError}
+          </div>
+        )}
+
         {/* Descripción de la categoría seleccionada */}
         {selectedCategoryInfo && (
           <div className="mb-8 max-w-3xl mx-auto bg-white border border-gray-200 rounded-xl p-4 sm:p-6 shadow-sm">
@@ -250,7 +348,9 @@ export const BookPages = () => {
               <h3 className="text-base sm:text-lg font-semibold text-gray-800 mb-3">
                 Temas recientes
               </h3>
-              {filteredTopics.length === 0 ? (
+              {forumLoading ? (
+                <p className="text-sm text-gray-500">Cargando temas...</p>
+              ) : filteredTopics.length === 0 ? (
                 <p className="text-sm text-gray-500">
                   Aún no hay temas en este apartado. Sé el primero en crear uno.
                 </p>
@@ -316,9 +416,9 @@ export const BookPages = () => {
               <button
                 onClick={handleCreateTopic}
                 className="w-full bg-blue-600 text-white text-sm font-medium py-2.5 rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
-                disabled={!user}
+                disabled={!user || savingTopic}
               >
-                Publicar tema
+                {savingTopic ? 'Publicando...' : 'Publicar tema'}
               </button>
             </div>
           </div>
@@ -395,9 +495,9 @@ export const BookPages = () => {
                   <button
                     onClick={handleAddComment}
                     className="w-full bg-green-600 text-white text-sm font-medium py-2.5 rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50"
-                    disabled={!user}
+                    disabled={!user || savingComment}
                   >
-                    Publicar comentario
+                    {savingComment ? 'Publicando...' : 'Publicar comentario'}
                   </button>
                 </div>
               </div>

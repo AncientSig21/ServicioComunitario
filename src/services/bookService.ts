@@ -529,16 +529,20 @@ export const solicitarPago = async ({
       condominio_id = usuarioData.condominio_id;
     }
 
-    // Si hay monto_usd, obtener tasa actual y usar monto = monto_usd * tasa (mismo criterio que admin)
+    // Si hay monto_usd, obtener tasa en tiempo real por API para que el monto en Bs coincida con lo mostrado
     let montoFinal = monto;
     let montoUsdInsert: number | null = null;
     if (monto_usd != null && monto_usd > 0) {
       try {
-        const tasa = await getTasaParaCalculo();
+        const res = await fetchTasaEnTiempoReal({ guardarEnBD: false });
+        const tasa = res?.tasa != null && res.tasa > 0 ? res.tasa : await getTasaParaCalculo();
         montoFinal = Math.round(monto_usd * tasa * 100) / 100;
         montoUsdInsert = monto_usd;
       } catch (e) {
-        console.warn('solicitarPago: no se pudo obtener tasa, usando monto fijo', e);
+        console.warn('solicitarPago: no se pudo obtener tasa API, usando fallback', e);
+        const tasa = await getTasaParaCalculo();
+        montoFinal = Math.round(monto_usd * tasa * 100) / 100;
+        montoUsdInsert = monto_usd;
       }
     }
 
@@ -757,19 +761,24 @@ export const validarPago = async ({
 
     if (updateError) throw updateError;
 
-    // 4. Recalcular y actualizar usuarios.total_pagado con la suma real (abono + excedente) de todos los pagos validados del usuario.
-    // Así la columna total_pagado en la BD deja de quedar null y refleja el total realmente pagado.
+    // 4. Recalcular y actualizar usuarios.total_pagado (RPC evita bloqueo por RLS; fallback a UPDATE directo).
     if (pago.usuario_id && nuevo_estado !== 'rechazado') {
       try {
-        const totalDesdePagos = await obtenerTotalPagadoDesdePagos(pago.usuario_id);
-        if (totalDesdePagos !== null) {
-          await supabase
-            .from('usuarios')
-            .update({
-              total_pagado: Math.round(totalDesdePagos * 100) / 100,
-              updated_at: getCurrentLocalISOString()
-            })
-            .eq('id', pago.usuario_id);
+        const { error: rpcError } = await (supabase as any).rpc('actualizar_total_pagado_usuario', {
+          usuario_id: pago.usuario_id
+        });
+        if (rpcError) {
+          // Si la función no existe o falla, intentar actualización directa (puede fallar por RLS)
+          const totalDesdePagos = await obtenerTotalPagadoDesdePagos(pago.usuario_id);
+          if (totalDesdePagos !== null) {
+            await supabase
+              .from('usuarios')
+              .update({
+                total_pagado: Math.round(totalDesdePagos * 100) / 100,
+                updated_at: getCurrentLocalISOString()
+              })
+              .eq('id', pago.usuario_id);
+          }
         }
       } catch (errTotal) {
         console.warn('Error actualizando usuarios.total_pagado (no crítico):', errTotal);
@@ -1314,16 +1323,20 @@ export const crearPagosMasivos = async ({
     // Mapear tipo de pago
     const tipoMapeado = typeof tipo === 'string' ? mapearTipoPago(tipo) : tipo;
 
-    // Si hay monto_usd, obtener tasa actual y usar monto = monto_usd * tasa (snapshot)
+    // Si hay monto_usd, obtener tasa en tiempo real por API y usar monto = monto_usd * tasa (lo que ingresa el admin se refleja en BD)
     let montoFinal = monto;
     let montoUsdInsert: number | null = null;
     if (monto_usd != null && monto_usd > 0) {
       try {
-        const tasa = await getTasaParaCalculo();
+        const res = await fetchTasaEnTiempoReal({ guardarEnBD: true });
+        const tasa = res?.tasa != null && res.tasa > 0 ? res.tasa : await getTasaParaCalculo();
         montoFinal = Math.round(monto_usd * tasa * 100) / 100;
         montoUsdInsert = monto_usd;
       } catch (e) {
-        console.warn('crearPagosMasivos: no se pudo obtener tasa, usando monto fijo', e);
+        console.warn('crearPagosMasivos: no se pudo obtener tasa API, usando fallback', e);
+        const tasa = await getTasaParaCalculo();
+        montoFinal = Math.round(monto_usd * tasa * 100) / 100;
+        montoUsdInsert = monto_usd;
       }
     }
 
@@ -1650,7 +1663,11 @@ export const eliminarPago = async ({
 };
 
 // 3. ANUNCIOS
-export const fetchAnuncios = async (condominioId?: number, categoria?: string) => {
+export const fetchAnuncios = async (
+  condominioId?: number,
+  categoria?: string,
+  incluirInactivos?: boolean
+) => {
   try {
     let query = supabase
       .from('anuncios')
@@ -1658,13 +1675,14 @@ export const fetchAnuncios = async (condominioId?: number, categoria?: string) =
         *,
         autor_usuario:usuarios!anuncios_autor_usuario_id_fkey(nombre, correo, rol)
       `)
-      .eq('activo', true)
       .order('fecha_publicacion', { ascending: false });
 
-    if (condominioId) {
+    if (!incluirInactivos) {
+      query = query.eq('activo', true);
+    }
+    if (condominioId != null) {
       query = query.eq('condominio_id', condominioId);
     }
-    
     if (categoria) {
       query = query.eq('categoria', categoria);
     }
@@ -1684,26 +1702,28 @@ export const crearAnuncio = async ({
   autor_usuario_id,
   titulo,
   contenido,
-  categoria
+  categoria,
+  activo = true,
 }: {
   condominio_id?: number;
   autor_usuario_id: number;
   titulo: string;
   contenido: string;
   categoria?: string | null;
+  activo?: boolean;
 }) => {
   try {
     const { data, error } = await supabase
       .from('anuncios')
       .insert([{
-        condominio_id: condominio_id || null,
+        condominio_id: condominio_id ?? null,
         autor_usuario_id,
         titulo,
         contenido,
-        categoria: categoria || null,
+        categoria: categoria ?? null,
         fecha_publicacion: getCurrentLocalISOString(),
         fecha_expiracion: null,
-        activo: true,
+        activo: activo ?? true,
         created_at: getCurrentLocalISOString(),
         updated_at: getCurrentLocalISOString()
       }])
@@ -1728,6 +1748,139 @@ export const crearAnuncio = async ({
     return data[0];
   } catch (error) {
     console.error('Error en crearAnuncio:', error);
+    throw error;
+  }
+};
+
+export const actualizarAnuncio = async (
+  id: number,
+  datos: { activo?: boolean; titulo?: string; contenido?: string; categoria?: string | null }
+) => {
+  try {
+    const { data, error } = await supabase
+      .from('anuncios')
+      .update({
+        ...datos,
+        updated_at: getCurrentLocalISOString(),
+      })
+      .eq('id', id)
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  } catch (error) {
+    console.error('Error en actualizarAnuncio:', error);
+    throw error;
+  }
+};
+
+export const eliminarAnuncio = async (id: number) => {
+  try {
+    const { error } = await supabase.from('anuncios').delete().eq('id', id);
+    if (error) throw error;
+  } catch (error) {
+    console.error('Error en eliminarAnuncio:', error);
+    throw error;
+  }
+};
+
+// 3.1 FORO COMUNITARIO (forum_temas, forum_comentarios)
+export interface ForumTopicRow {
+  id: number;
+  category_id: string;
+  title: string;
+  content: string;
+  author: string;
+  usuario_id: number | null;
+  created_at: string;
+}
+
+export interface ForumCommentRow {
+  id: number;
+  tema_id: number;
+  author: string;
+  content: string;
+  usuario_id: number | null;
+  created_at: string;
+}
+
+export const fetchForumTemas = async (): Promise<ForumTopicRow[]> => {
+  try {
+    const { data, error } = await (supabase as any)
+      .from('forum_temas')
+      .select('*')
+      .order('created_at', { ascending: false });
+    if (error) throw error;
+    return ((data || []) as unknown) as ForumTopicRow[];
+  } catch (error) {
+    console.error('Error en fetchForumTemas:', error);
+    throw error;
+  }
+};
+
+export const crearForumTema = async (payload: {
+  category_id: string;
+  title: string;
+  content: string;
+  author: string;
+  usuario_id?: number | null;
+}): Promise<ForumTopicRow> => {
+  try {
+    const { data, error } = await (supabase as any)
+      .from('forum_temas')
+      .insert([{
+        category_id: payload.category_id,
+        title: payload.title,
+        content: payload.content,
+        author: payload.author,
+        usuario_id: payload.usuario_id ?? null,
+      }])
+      .select()
+      .single();
+    if (error) throw error;
+    return data as ForumTopicRow;
+  } catch (error) {
+    console.error('Error en crearForumTema:', error);
+    throw error;
+  }
+};
+
+export const fetchForumComentariosByTema = async (temaId: number): Promise<ForumCommentRow[]> => {
+  try {
+    const { data, error } = await (supabase as any)
+      .from('forum_comentarios')
+      .select('*')
+      .eq('tema_id', temaId)
+      .order('created_at', { ascending: true });
+    if (error) throw error;
+    return ((data || []) as unknown) as ForumCommentRow[];
+  } catch (error) {
+    console.error('Error en fetchForumComentariosByTema:', error);
+    throw error;
+  }
+};
+
+export const crearForumComentario = async (payload: {
+  tema_id: number;
+  author: string;
+  content: string;
+  usuario_id?: number | null;
+}): Promise<ForumCommentRow> => {
+  try {
+    const { data, error } = await (supabase as any)
+      .from('forum_comentarios')
+      .insert([{
+        tema_id: payload.tema_id,
+        author: payload.author,
+        content: payload.content,
+        usuario_id: payload.usuario_id ?? null,
+      }])
+      .select()
+      .single();
+    if (error) throw error;
+    return data as ForumCommentRow;
+  } catch (error) {
+    console.error('Error en crearForumComentario:', error);
     throw error;
   }
 };
@@ -2815,7 +2968,6 @@ export const crearSolicitudMantenimiento = async ({
       observaciones: null,
       created_at: getCurrentLocalISOString(),
       updated_at: getCurrentLocalISOString(),
-      tipo: tipo || 'mantenimiento',
     };
     const { data, error } = await supabase
       .from('solicitudes_mantenimiento')
@@ -3330,10 +3482,8 @@ export const aplicarAbonoAPagoEspecifico = async (
 };
 
 /**
- * Obtiene el total pagado del usuario desde la BD: suma de (abono + excedente)
- * solo de pagos ya VALIDADOS por el administrador (estado = 'pagado').
- * Así "Total pagado" refleja el monto total realmente pagado (incluye excedentes).
- * Los pagos pendientes de validación no cuentan.
+ * Obtiene el total pagado del usuario desde la BD: suma de (abono + excedente) de TODOS los pagos del usuario.
+ * Incluye pagos pendientes de validación para que el abono aplicado con "Usar mi abono" se refleje en el total de inmediato.
  * Retorna null si falla para que la UI use el total calculado.
  */
 export const obtenerTotalPagadoDesdePagos = async (usuario_id: number): Promise<number | null> => {
@@ -3349,7 +3499,6 @@ export const obtenerTotalPagadoDesdePagos = async (usuario_id: number): Promise<
         let total = 0;
         for (const row of fallback.data) {
           const raw = row as Record<string, unknown>;
-          if ((String(raw?.estado || '')).toLowerCase() !== 'pagado') continue;
           const abonoVal = raw?.abono ?? raw?.monto_pagado;
           const abono = abonoVal != null ? parseFloat(String(abonoVal)) : 0;
           if (Number.isFinite(abono) && abono > 0) total += abono;
@@ -3364,8 +3513,6 @@ export const obtenerTotalPagadoDesdePagos = async (usuario_id: number): Promise<
     let total = 0;
     for (const row of data) {
       const raw = row as Record<string, unknown>;
-      const estado = (raw?.estado != null ? String(raw.estado) : '').toLowerCase();
-      if (estado !== 'pagado') continue;
       const abonoVal = raw?.abono ?? raw?.monto_pagado;
       const abono = abonoVal != null ? parseFloat(String(abonoVal)) : 0;
       const excedente = raw?.excedente != null ? parseFloat(String(raw.excedente)) : 0;
@@ -3401,6 +3548,114 @@ export const obtenerTotalPagadoUsuario = async (usuario_id: number): Promise<num
   } catch (e) {
     console.warn('obtenerTotalPagadoUsuario:', e);
     return null;
+  }
+};
+
+/**
+ * Ejecuta la función de BD actualizar_usuarios_morosos(): marca como Moroso a usuarios
+ * con cuotas vencidas (fecha_vencimiento < hoy) y Activo a quienes ya no tienen.
+ * Se llama automáticamente al cargar la app para que el bloqueo por morosidad sea efectivo
+ * cuando pasa la fecha de vencimiento de una cuota.
+ */
+export const ejecutarActualizarUsuariosMorosos = async (): Promise<void> => {
+  try {
+    await (supabase as any).rpc('actualizar_usuarios_morosos');
+  } catch (e) {
+    console.warn('ejecutarActualizarUsuariosMorosos (no crítico):', e);
+  }
+};
+
+/** Tipo de reporte para la sección Reportes del admin (compatible con AdminReportsPage) */
+export interface ReporteAdmin {
+  id: number;
+  tipo: 'pago' | 'morosidad' | 'mantenimiento' | 'reserva' | 'cambio_estado';
+  residente_id: number;
+  residente_nombre?: string;
+  residente_correo?: string;
+  residente_apartamento?: string;
+  descripcion: string;
+  monto?: number;
+  fecha: string;
+  estado: 'pendiente' | 'completado' | 'cancelado' | 'vencido';
+  fecha_vencimiento?: string;
+}
+
+/**
+ * Obtiene reportes de morosidad desde Supabase (usuarios con Estado/estado = 'Moroso').
+ * Usado por AdminReportsPage cuando la app está conectada a Supabase.
+ */
+export const getReportesFromSupabase = async (): Promise<ReporteAdmin[]> => {
+  const reportes: ReporteAdmin[] = [];
+  type UsuarioRow = { id: number; nombre?: string; correo?: string; numeroApartamento?: string; Estado?: string; estado?: string };
+  try {
+    // Traer usuarios morosos: la tabla tiene una sola columna de estado (Estado o estado). No pedir ambas a la vez (400).
+    let usuarios: UsuarioRow[] | null = null;
+
+    const resMayuscula = await supabase
+      .from('usuarios')
+      .select('id, nombre, correo')
+      .eq('Estado', 'Moroso');
+    if (!resMayuscula.error && resMayuscula.data && resMayuscula.data.length >= 0) {
+      usuarios = resMayuscula.data as UsuarioRow[];
+    }
+    if (resMayuscula.error || !usuarios) {
+      const resMinuscula = await supabase
+        .from('usuarios')
+        .select('id, nombre, correo')
+        .eq('estado', 'Moroso');
+      if (!resMinuscula.error && resMinuscula.data) {
+        usuarios = resMinuscula.data as UsuarioRow[];
+      }
+    }
+
+    if (!usuarios || usuarios.length === 0) return [];
+
+    const hoy = new Date().toISOString().slice(0, 10);
+    let reporteId = 1;
+
+    for (const u of usuarios) {
+      const usuarioId = u.id as number;
+      const nombre = u.nombre ?? '';
+      const correo = u.correo ?? '';
+      const apartamento = typeof (u as { numeroApartamento?: string }).numeroApartamento === 'string'
+        ? (u as { numeroApartamento?: string }).numeroApartamento
+        : '';
+
+      // Monto adeudado: suma de pagos pendientes/vencidos con fecha pasada
+      const { data: pagosAdeudo } = await supabase
+        .from('pagos')
+        .select('monto, abono, fecha_vencimiento')
+        .eq('usuario_id', usuarioId)
+        .in('estado', ['pendiente', 'vencido'])
+        .lt('fecha_vencimiento', hoy);
+
+      let montoAdeudado = 0;
+      if (pagosAdeudo?.length) {
+        for (const p of pagosAdeudo) {
+          const monto = Number((p as { monto?: number }).monto ?? 0);
+          const abono = Number((p as { abono?: number }).abono ?? 0);
+          montoAdeudado += Math.max(0, monto - abono);
+        }
+      }
+
+      reportes.push({
+        id: reporteId++,
+        tipo: 'morosidad',
+        residente_id: usuarioId,
+        residente_nombre: nombre,
+        residente_correo: correo,
+        residente_apartamento: apartamento,
+        descripcion: 'Residente con pagos pendientes o vencidos',
+        monto: Math.round(montoAdeudado * 100) / 100,
+        fecha: new Date().toISOString(),
+        estado: 'vencido',
+      });
+    }
+
+    return reportes;
+  } catch (e) {
+    console.warn('getReportesFromSupabase:', e);
+    return [];
   }
 };
 
@@ -4133,83 +4388,22 @@ const fileToBase64 = (file: File): Promise<string> => {
   });
 };
 
-// Función para subir archivo a Supabase Storage y obtener archivo_id
-// Con fallback a base64 si los buckets no están disponibles
+// Subir comprobante usando solo la tabla archivos (base64 en url). Sin Storage.
 export const subirArchivoComprobante = async (
   file: File,
   usuario_id: number
 ): Promise<number | null> => {
   try {
-    const fileExt = file.name.split('.').pop();
-    const fileName = `${Date.now()}_${usuario_id}_${Math.random().toString(36).substring(7)}.${fileExt}`;
-    let publicUrl: string | null = null;
-    let base64Data: string | null = null;
-
-    // 1. Intentar subir a bucket principal "condominio-files"
-    try {
-      const filePath1 = `comprobantes/${fileName}`;
-      const { error: uploadError } = await supabase.storage
-        .from('condominio-files')
-        .upload(filePath1, file);
-
-      if (!uploadError) {
-        const { data: urlData } = supabase.storage
-          .from('condominio-files')
-          .getPublicUrl(filePath1);
-        publicUrl = urlData?.publicUrl || null;
-      } else {
-        throw uploadError;
-      }
-    } catch (error1) {
-      console.warn('Error subiendo a condominio-files, intentando comprobantes:', error1);
-      
-      // 2. Intentar con bucket alternativo "comprobantes" (sin path duplicado)
-      try {
-        // Usar solo el fileName sin "comprobantes/" para evitar path duplicado
-        const { error: uploadError2 } = await supabase.storage
-          .from('comprobantes')
-          .upload(fileName, file);
-
-        if (!uploadError2) {
-          const { data: urlData2 } = supabase.storage
-            .from('comprobantes')
-            .getPublicUrl(fileName);
-          publicUrl = urlData2?.publicUrl || null;
-        } else {
-          throw uploadError2;
-        }
-      } catch (error2) {
-        console.warn('Error subiendo a comprobantes, usando base64 como fallback:', error2);
-        
-        // 3. Fallback: convertir a base64 y almacenar en base de datos
-        try {
-          base64Data = await fileToBase64(file);
-        } catch (error3) {
-          console.error('Error convirtiendo archivo a base64:', error3);
-          return null;
-        }
-      }
-    }
-
-    // 4. Crear registro en tabla archivos
-    const archivoData: any = {
+    const base64Data = await fileToBase64(file);
+    const archivoData: Record<string, unknown> = {
       usuario_id,
       entidad: 'pagos',
-      entidad_id: null, // Se actualizará cuando se cree el pago
+      entidad_id: null,
       nombre_original: file.name,
       tipo_mime: file.type,
+      url: base64Data,
       created_at: getCurrentLocalISOString()
     };
-
-    if (publicUrl) {
-      archivoData.url = publicUrl;
-    } else if (base64Data) {
-      // Almacenar base64 en un campo de texto (asumiendo que existe un campo para esto)
-      // Si no existe, podemos usar el campo url para almacenar el prefijo "data:"
-      archivoData.url = base64Data; // Almacenar base64 completo en url
-    } else {
-      return null;
-    }
 
     const { data: archivoInsert, error: archivoError } = await supabase
       .from('archivos')
@@ -4222,7 +4416,7 @@ export const subirArchivoComprobante = async (
       return null;
     }
 
-    return archivoInsert?.id || null;
+    return archivoInsert?.id ?? null;
   } catch (error) {
     console.error('Error en subirArchivoComprobante:', error);
     return null;

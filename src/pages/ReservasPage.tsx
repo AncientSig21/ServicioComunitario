@@ -15,6 +15,7 @@ interface EspacioComun {
   estado: string;
   activo: boolean;
   created_at?: string;
+  imagen_url?: string | null;
 }
 
 const estadoColors = {
@@ -284,6 +285,16 @@ export const ReservasPage = () => {
                     </h2>
                   </div>
                 </div>
+
+                {espacio.imagen_url && (
+                  <div className="mb-4 rounded-lg overflow-hidden border border-gray-200">
+                    <img
+                      src={espacio.imagen_url}
+                      alt={espacio.nombre}
+                      className="w-full h-48 object-cover"
+                    />
+                  </div>
+                )}
 
                 {espacio.descripcion && (
                   <p className="text-gray-700 text-base leading-relaxed mb-4 whitespace-pre-line">

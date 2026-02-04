@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from 'react';
-import { fetchPagos, fetchPagoById, validarPago, crearNotificacion, fetchSolicitudesMantenimiento, actualizarEstadoSolicitud, fetchEspaciosPendientes, validarEspacioComun, eliminarEspacioComun, parsearExcedenteDeObservaciones, getTasaParaPagos, getMontoDisplay, formatMontoUsd, obtenerUrlComprobanteParaVisualizar } from '../services/bookService';
+import { fetchPagos, fetchPagoById, validarPago, crearNotificacion, fetchSolicitudesMantenimiento, actualizarEstadoSolicitud, fetchEspaciosPendientes, validarEspacioComun, eliminarEspacioComun, parsearExcedenteDeObservaciones, getTasaParaPagos, getMontoDisplay, formatMontoUsd, obtenerUrlComprobanteParaVisualizar, fetchAnuncios, actualizarAnuncio, eliminarAnuncio } from '../services/bookService';
 import { fetchTasaEnTiempoReal } from '../services/exchangeRateService';
 import { useAuth } from '../hooks/useAuth';
 import { Pagination } from '../components/shared/Pagination';
@@ -47,8 +47,6 @@ interface Evento {
   usuario_id?: number; // ID del usuario que creó el evento
   usuario_nombre?: string; // Nombre del usuario que creó el evento
 }
-
-const MOCK_DB_KEY = 'mockDatabase_condominio';
 
 interface SolicitudMantenimiento {
   id: number;
@@ -124,22 +122,24 @@ const AdminValidacionPagosPage = () => {
     observaciones: '',
   });
   const [comprobanteDisplayUrl, setComprobanteDisplayUrl] = useState<string | null>(null);
+  const [comprobanteDisplayMime, setComprobanteDisplayMime] = useState<string | null>(null);
   const comprobanteBlobUrlRef = useRef<string | null>(null);
 
-  const cargarEventos = () => {
+  const cargarEventos = async () => {
     try {
-      const db = JSON.parse(localStorage.getItem(MOCK_DB_KEY) || '{"anuncios": []}');
-      const todosLosAnuncios = db.anuncios || [];
-      
-      const eventosData = todosLosAnuncios
-        .filter((anuncio: any) => anuncio.categoria === 'evento')
-        .map((anuncio: any) => ({
-          ...anuncio,
-          estado: anuncio.estado || (anuncio.autor === 'Pendiente de aprobación' ? 'pendiente' : 'aprobado'),
-        }));
-
+      const rows = await fetchAnuncios(undefined, 'evento', true);
+      const eventosData: Evento[] = rows.map((r: any) => ({
+        id: r.id,
+        titulo: r.titulo || '',
+        contenido: r.contenido || '',
+        fecha: r.fecha_publicacion ? new Date(r.fecha_publicacion).toISOString().split('T')[0] : '',
+        categoria: 'evento',
+        autor: r.autor_usuario?.nombre || 'Pendiente de aprobación',
+        estado: r.activo ? 'aprobado' : 'pendiente',
+        usuario_id: r.autor_usuario_id,
+        usuario_nombre: r.autor_usuario?.nombre,
+      }));
       setEventos(eventosData);
-      
       const pendientes = eventosData.filter((e: Evento) => e.estado === 'pendiente');
       setEventosPendientesCount(pendientes.length);
     } catch (error) {
@@ -178,31 +178,34 @@ const AdminValidacionPagosPage = () => {
     }
   }, [activeTab]);
 
-  // Resolver URL del comprobante para que el admin pueda verlo (URL firmada para storage privado; blob para data: base64 y evitar "entity too large")
+  // Resolver URL del comprobante para que el admin pueda verlo en la misma página (img/iframe, no enlace)
   useEffect(() => {
     const url = pagoSeleccionado?.archivos?.url;
     if (comprobanteBlobUrlRef.current) {
       URL.revokeObjectURL(comprobanteBlobUrlRef.current);
       comprobanteBlobUrlRef.current = null;
     }
+    setComprobanteDisplayMime(null);
     if (!url) {
       setComprobanteDisplayUrl(null);
       return;
     }
     if (url.startsWith('data:')) {
       try {
+        const mime = (url.match(/^data:([^;]+);/)?.[1]) || 'application/pdf';
         const base64 = url.split(',')[1];
         if (base64) {
           const binary = atob(base64);
           const bytes = new Uint8Array(binary.length);
           for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-          const mime = (url.match(/^data:([^;]+);/)?.[1]) || 'application/pdf';
           const blob = new Blob([bytes], { type: mime });
           const blobUrl = URL.createObjectURL(blob);
           comprobanteBlobUrlRef.current = blobUrl;
           setComprobanteDisplayUrl(blobUrl);
+          setComprobanteDisplayMime(mime);
         } else {
           setComprobanteDisplayUrl(url);
+          setComprobanteDisplayMime(mime);
         }
       } catch {
         setComprobanteDisplayUrl(url);
@@ -621,24 +624,7 @@ const AdminValidacionPagosPage = () => {
 
     try {
       setLoading(true);
-      
-      const db = JSON.parse(localStorage.getItem(MOCK_DB_KEY) || '{"anuncios": []}');
-      const anuncios = db.anuncios || [];
-      
-      const eventoActualizado = anuncios.map((anuncio: any) => {
-        if (anuncio.id === eventoSeleccionado.id && anuncio.categoria === 'evento') {
-          return {
-            ...anuncio,
-            estado: 'aprobado',
-            autor: eventoSeleccionado.autor || eventoSeleccionado.usuario_nombre || 'Administración',
-          };
-        }
-        return anuncio;
-      });
-
-      db.anuncios = eventoActualizado;
-      localStorage.setItem(MOCK_DB_KEY, JSON.stringify(db));
-
+      await actualizarAnuncio(eventoSeleccionado.id, { activo: true });
       if (eventoSeleccionado.usuario_id) {
         try {
           await crearNotificacion(
@@ -647,17 +633,16 @@ const AdminValidacionPagosPage = () => {
             `Tu evento "${eventoSeleccionado.titulo}" ha sido aprobado y ahora es visible para todos los residentes.`,
             'evento',
             eventoSeleccionado.id,
-            'Evento Aprobado' // Título específico
+            'Evento Aprobado'
           );
         } catch (notifError) {
           console.error('Error enviando notificación de evento aprobado:', notifError);
         }
       }
-
       alert('✅ Evento aprobado exitosamente');
       setShowEventValidationModal(false);
       setEventoSeleccionado(null);
-      cargarEventos(); // Recargar eventos para actualizar contador
+      await cargarEventos();
     } catch (err: any) {
       console.error('Error aprobando evento:', err);
       alert(err.message || 'Error al aprobar el evento');
@@ -676,23 +661,7 @@ const AdminValidacionPagosPage = () => {
 
     try {
       setLoading(true);
-      
-      const db = JSON.parse(localStorage.getItem(MOCK_DB_KEY) || '{"anuncios": []}');
-      const anuncios = db.anuncios || [];
-      
-      const eventoActualizado = anuncios.map((anuncio: any) => {
-        if (anuncio.id === eventoSeleccionado.id && anuncio.categoria === 'evento') {
-          return {
-            ...anuncio,
-            estado: 'rechazado',
-          };
-        }
-        return anuncio;
-      });
-
-      db.anuncios = eventoActualizado;
-      localStorage.setItem(MOCK_DB_KEY, JSON.stringify(db));
-
+      await eliminarAnuncio(eventoSeleccionado.id);
       if (eventoSeleccionado.usuario_id) {
         try {
           await crearNotificacion(
@@ -701,18 +670,17 @@ const AdminValidacionPagosPage = () => {
             `Tu evento "${eventoSeleccionado.titulo}" ha sido rechazado. Motivo: ${motivoRechazo}`,
             'evento',
             eventoSeleccionado.id,
-            'Evento Rechazado' // Título específico
+            'Evento Rechazado'
           );
         } catch (notifError) {
           console.error('Error enviando notificación de evento rechazado:', notifError);
         }
       }
-
       alert('✅ Evento rechazado exitosamente');
       setShowEventValidationModal(false);
       setEventoSeleccionado(null);
       setMotivoRechazo('');
-      cargarEventos(); // Recargar eventos para actualizar contador
+      await cargarEventos();
     } catch (err: any) {
       console.error('Error rechazando evento:', err);
       alert(err.message || 'Error al rechazar el evento');
@@ -732,17 +700,7 @@ const AdminValidacionPagosPage = () => {
 
     try {
       setLoading(true);
-      
-      const db = JSON.parse(localStorage.getItem(MOCK_DB_KEY) || '{"anuncios": []}');
-      const anuncios = db.anuncios || [];
-      
-      const anunciosFiltrados = anuncios.filter((anuncio: any) => 
-        !(anuncio.id === evento.id && anuncio.categoria === 'evento')
-      );
-
-      db.anuncios = anunciosFiltrados;
-      localStorage.setItem(MOCK_DB_KEY, JSON.stringify(db));
-
+      await eliminarAnuncio(evento.id);
       if (evento.usuario_id) {
         try {
           await crearNotificacion(
@@ -757,9 +715,8 @@ const AdminValidacionPagosPage = () => {
           console.error('Error enviando notificación de evento eliminado:', notifError);
         }
       }
-
       alert('✅ Evento eliminado exitosamente');
-      cargarEventos(); // Recargar eventos para actualizar contador
+      await cargarEventos();
     } catch (err: any) {
       console.error('Error eliminando evento:', err);
       alert(err.message || 'Error al eliminar el evento');
@@ -1387,15 +1344,23 @@ const AdminValidacionPagosPage = () => {
                   {pagoSeleccionado.archivos?.url && (
                     <div className={pagoSeleccionado.metodo_pago ? '' : 'col-span-2 sm:col-span-1'}>
                       <p className="text-sm text-gray-600 mb-1">Comprobante:</p>
-                      <a
-                        href={pagoSeleccionado.archivos.url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex items-center gap-1 text-blue-600 hover:underline font-medium"
-                      >
-                        <FaEye />
-                        Ver comprobante
-                      </a>
+                      {comprobanteDisplayUrl ? (
+                        comprobanteDisplayMime && comprobanteDisplayMime.toLowerCase().includes('pdf') ? (
+                          <iframe
+                            src={comprobanteDisplayUrl}
+                            title="Comprobante"
+                            className="w-full max-h-[70vh] min-h-[300px] rounded-lg border border-gray-200"
+                          />
+                        ) : (
+                          <img
+                            src={comprobanteDisplayUrl}
+                            alt="Comprobante"
+                            className="max-w-full max-h-[70vh] rounded-lg border border-gray-200 object-contain"
+                          />
+                        )
+                      ) : (
+                        <span className="text-gray-500 text-sm">Preparando comprobante...</span>
+                      )}
                     </div>
                   )}
                 </div>
@@ -1971,14 +1936,19 @@ const AdminValidacionPagosPage = () => {
                   <div>
                     <p className="text-sm text-gray-600 mb-1">Comprobante:</p>
                     {comprobanteDisplayUrl ? (
-                      <a
-                        href={comprobanteDisplayUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-blue-600 hover:underline"
-                      >
-                        Ver comprobante
-                      </a>
+                      comprobanteDisplayMime && comprobanteDisplayMime.toLowerCase().includes('pdf') ? (
+                        <iframe
+                          src={comprobanteDisplayUrl}
+                          title="Comprobante"
+                          className="w-full max-h-[70vh] min-h-[300px] rounded-lg border border-gray-200"
+                        />
+                      ) : (
+                        <img
+                          src={comprobanteDisplayUrl}
+                          alt="Comprobante"
+                          className="max-w-full max-h-[70vh] rounded-lg border border-gray-200 object-contain"
+                        />
+                      )
                     ) : (
                       <span className="text-gray-500 text-sm">Preparando comprobante...</span>
                     )}

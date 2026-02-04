@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { BackToHome } from '../components/shared/BackToHome';
 import { ScrollToTop } from '../components/shared/ScrollToTop';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '../hooks/useAuth';
+import { fetchAnuncios, crearAnuncio } from '../services/bookService';
 
 interface Anuncio {
   id: number;
@@ -85,6 +86,7 @@ export const AnunciosPage = () => {
   const { user } = useAuth();
   const [selectedCategoria, setSelectedCategoria] = useState<string>('todas');
   const [anuncios, setAnuncios] = useState<Anuncio[]>(anunciosEjemplo);
+  const [anunciosLoading, setAnunciosLoading] = useState(true);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [nuevoEvento, setNuevoEvento] = useState({
     titulo: '',
@@ -92,6 +94,32 @@ export const AnunciosPage = () => {
     categoria: 'evento' as const,
   });
   const [loading, setLoading] = useState(false);
+
+  const condominioId = user && 'condominio_id' in user ? (user as { condominio_id?: number }).condominio_id : undefined;
+
+  const loadAnuncios = useCallback(async () => {
+    setAnunciosLoading(true);
+    try {
+      const rows = await fetchAnuncios(condominioId ?? undefined, undefined, false);
+      setAnuncios(rows.map((r: any) => ({
+        id: r.id,
+        titulo: r.titulo || '',
+        contenido: r.contenido || '',
+        fecha: r.fecha_publicacion ? new Date(r.fecha_publicacion).toISOString().split('T')[0] : '',
+        categoria: (r.categoria || 'general') as Anuncio['categoria'],
+        autor: r.autor_usuario?.nombre || 'Administración',
+      })));
+    } catch (e) {
+      console.warn('Error cargando anuncios:', e);
+      setAnuncios(anunciosEjemplo);
+    } finally {
+      setAnunciosLoading(false);
+    }
+  }, [condominioId]);
+
+  useEffect(() => {
+    loadAnuncios();
+  }, [loadAnuncios]);
 
   const categorias = ['todas', 'general', 'importante', 'mantenimiento', 'evento', 'foro'];
 
@@ -121,38 +149,16 @@ export const AnunciosPage = () => {
 
     try {
       setLoading(true);
-
-      // Crear el evento (simulado)
-      const MOCK_DB_KEY = 'mockDatabase_condominio';
-      const db = JSON.parse(localStorage.getItem(MOCK_DB_KEY) || '{"anuncios": []}');
-      if (!db.anuncios) {
-        db.anuncios = [];
-      }
-
-      const nuevoAnuncio: Anuncio = {
-        id: db.anuncios.length > 0 
-          ? Math.max(...db.anuncios.map((a: any) => a.id)) + 1 
-          : 1,
-        titulo: nuevoEvento.titulo,
-        contenido: nuevoEvento.contenido,
-        fecha: new Date().toISOString().split('T')[0],
+      await crearAnuncio({
+        condominio_id: condominioId ?? undefined,
+        autor_usuario_id: user.id,
+        titulo: nuevoEvento.titulo.trim(),
+        contenido: nuevoEvento.contenido.trim(),
         categoria: 'evento',
-        autor: 'Pendiente de aprobación',
-        estado: 'pendiente',
-        usuario_id: user.id,
-        usuario_nombre: user.nombre,
-      } as any;
-
-      db.anuncios.push(nuevoAnuncio);
-      localStorage.setItem(MOCK_DB_KEY, JSON.stringify(db));
-
-      // Agregar a la lista local (pero con estado pendiente)
-      setAnuncios([...anuncios, { ...nuevoAnuncio, autor: 'Pendiente de aprobación' }]);
-      
-      // Limpiar formulario
+        activo: false,
+      });
       setNuevoEvento({ titulo: '', contenido: '', categoria: 'evento' });
       setShowCreateModal(false);
-      
       alert('✅ Evento creado exitosamente. El administrador revisará tu propuesta.');
     } catch (error) {
       console.error('Error al crear evento:', error);
@@ -197,7 +203,11 @@ export const AnunciosPage = () => {
         </div>
 
         {/* Lista de anuncios */}
-        {filteredAnuncios.length === 0 ? (
+        {anunciosLoading ? (
+          <div className="text-center py-16">
+            <p className="text-gray-500 text-lg">Cargando anuncios...</p>
+          </div>
+        ) : filteredAnuncios.length === 0 ? (
           <div className="text-center py-16">
             <div className="text-6xl mb-4">📭</div>
             <p className="text-gray-500 text-lg">No hay anuncios en esta categoría</p>

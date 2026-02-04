@@ -135,7 +135,7 @@ const supabase = createSupabaseClient();
 
 // Función auxiliar para verificar si Supabase está realmente configurado
 // Esta función debe ser muy estricta para evitar intentar usar Supabase cuando no está disponible
-const isSupabaseConfigured = () => {
+export const isSupabaseConfigured = () => {
   const supabaseKey = import.meta.env.VITE_SUPABASE_API_KEY;
   const supabaseUrl = import.meta.env.VITE_PROJECT_URL_SUPABASE;
   
