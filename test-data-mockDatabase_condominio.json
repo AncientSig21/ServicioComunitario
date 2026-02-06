@@ -1,0 +1,15 @@
+{
+  "anuncios": [
+    {
+      "id": 1,
+      "titulo": "🎉 Fiesta de Bienvenida - Presentación del Sistema",
+      "contenido": "¡Hola vecinos! \n\nEstamos organizando una fiesta de bienvenida para presentar el nuevo sistema de gestión comunitaria.\n\n📅 Fecha: jueves, 22 de enero de 2026\n🕐 Hora: 6:00 PM\n📍 Lugar: Salón de Eventos del Condominio\n\nActividades:\n- Presentación del sistema web\n- Refrigerios\n- Música en vivo\n- Actividades para niños\n\n¡Esperamos contar con tu presencia!\n\nEste evento fue creado automáticamente por el script de pruebas del sistema.",
+      "fecha": "2026-01-22",
+      "categoria": "evento",
+      "autor": "Pendiente de aprobación",
+      "estado": "pendiente",
+      "usuario_id": 999,
+      "usuario_nombre": "Usuario de Prueba"
+    }
+  ]
+}

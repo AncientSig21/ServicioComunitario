@@ -1,0 +1,108 @@
+@import url('https://fonts.googleapis.com/css2?family=Montserrat:ital,wght@0,100..900;1,100..900&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Estilos para react-pdf */
+.react-pdf__Page {
+  margin: 1em auto;
+  box-shadow: 0 0 8px rgba(0, 0, 0, 0.5);
+}
+
+.react-pdf__Page__canvas {
+  display: block;
+  user-select: none;
+}
+
+.react-pdf__Page__textContent {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  overflow: hidden;
+  opacity: 0.2;
+  line-height: 1.0;
+}
+
+.react-pdf__Page__textContent--disabled {
+  opacity: 0;
+}
+
+.react-pdf__Page__annotations {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  overflow: hidden;
+  opacity: 0.2;
+  line-height: 1.0;
+}
+
+.react-pdf__Page__annotations--disabled {
+  opacity: 0;
+}
+
+/* Estilos personalizados para el tema */
+@layer base {
+  body {
+    font-family: 'Montserrat', sans-serif;
+    background-color: white;
+  }
+  
+  html {
+    background-color: white;
+  }
+}
+
+@layer components {
+  .btn-primary {
+    @apply bg-primary text-white px-4 py-2 rounded hover:bg-primary-dark transition-colors;
+  }
+  
+  .btn-secondary {
+    @apply bg-secondary text-white px-4 py-2 rounded hover:bg-secondary-dark transition-colors;
+  }
+}
+
+/* Clases para line-clamp */
+@layer utilities {
+  .line-clamp-1 {
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 1;
+  }
+  
+  .line-clamp-2 {
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+  
+  .line-clamp-3 {
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+  }
+}
+
+/* Animaciones para Toast */
+@keyframes slide-in-right {
+  from {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+.animate-slide-in-right {
+  animation: slide-in-right 0.3s ease-out;
+}
