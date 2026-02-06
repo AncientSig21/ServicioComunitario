@@ -7,6 +7,7 @@ import MorosoBlock from '../components/shared/MorosoBlock';
 import { ScrollToTop } from '../components/shared/ScrollToTop';
 import { ReservationProvider } from '../contexts/ReservationContext';
 import { ToastProvider } from '../contexts/ToastContext';
+import DemoModeBanner from '../components/shared/DemoModeBanner';
 
 export const RootLayout = () => {
 	const { pathname } = useLocation();
@@ -52,6 +53,7 @@ export const RootLayout = () => {
 		<ToastProvider>
 			<ReservationProvider>
 				<div className='h-screen flex flex-col font-montserrat bg-white'>
+					<DemoModeBanner />
 					<Navbar />
 
 					{pathname === '/' && <Banner />}
