@@ -7,7 +7,7 @@ import MorosoBlock from '../components/shared/MorosoBlock';
 import { ScrollToTop } from '../components/shared/ScrollToTop';
 import { ReservationProvider } from '../contexts/ReservationContext';
 import { ToastProvider } from '../contexts/ToastContext';
-import DemoModeBanner from '../components/shared/DemoModeBanner';
+import { PaymentNotificationListener } from '../components/shared/PaymentNotificationListener';
 
 export const RootLayout = () => {
 	const { pathname } = useLocation();
@@ -25,9 +25,6 @@ export const RootLayout = () => {
 		);
 	}
 
-	// Nota: Ya no bloqueamos la aplicación si Supabase no está configurado
-	// Ahora funciona en modo simulado usando localStorage
-
 	// Si el usuario está autenticado y es moroso: solo permitir acceso a /pagos para enviar comprobante
 	if (user && isUserMoroso()) {
 		if (pathname === '/pagos') {
@@ -41,6 +38,7 @@ export const RootLayout = () => {
 							</main>
 							<Footer />
 							<ScrollToTop />
+							<PaymentNotificationListener />
 						</div>
 					</ReservationProvider>
 				</ToastProvider>
@@ -53,7 +51,6 @@ export const RootLayout = () => {
 		<ToastProvider>
 			<ReservationProvider>
 				<div className='h-screen flex flex-col font-montserrat bg-white'>
-					<DemoModeBanner />
 					<Navbar />
 
 					{pathname === '/' && <Banner />}
@@ -63,6 +60,7 @@ export const RootLayout = () => {
 					</main>
 					<Footer />
 					<ScrollToTop />
+					<PaymentNotificationListener />
 				</div>
 			</ReservationProvider>
 		</ToastProvider>

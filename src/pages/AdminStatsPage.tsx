@@ -1,20 +1,7 @@
 import { useEffect, useState } from 'react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import { fetchTasaEnTiempoReal } from '../services/exchangeRateService';
-
-const MOCK_DB_KEY = 'mockDatabase_condominio';
-
-const getMockDatabase = () => {
-  try {
-    const stored = localStorage.getItem(MOCK_DB_KEY);
-    if (stored) {
-      return JSON.parse(stored);
-    }
-  } catch (error) {
-    console.warn('Error al cargar base de datos desde localStorage:', error);
-  }
-  return { usuarios: [], ordenes: [] };
-};
+import { supabase } from '../supabase/client';
 
 const AdminStatsPage = () => {
   const [totalUnidades, setTotalUnidades] = useState<number>(0);
@@ -56,26 +43,32 @@ const AdminStatsPage = () => {
       setLoading(true);
       setError(null);
       try {
-        const db = getMockDatabase();
-        
+        // Obtener usuarios desde Supabase
+        const { data: usuarios, error: errorUsuarios } = await supabase
+          .from('usuarios')
+          .select('id, numeroApartamento, Estado');
+
+        if (errorUsuarios) {
+          throw errorUsuarios;
+        }
+
+        const listaUsuarios = usuarios || [];
+
         // Contar unidades únicas (por número de apartamento)
         const unidadesUnicas = new Set(
-          db.usuarios?.map((u: any) => u.numeroApartamento).filter((apto: string) => apto) || []
+          listaUsuarios.map((u: any) => u.numeroApartamento).filter((apto: string) => apto)
         );
         setTotalUnidades(unidadesUnicas.size || 0);
 
         // Total de residentes
-        const totalRes = db.usuarios?.length || 0;
-        setTotalResidentes(totalRes);
+        setTotalResidentes(listaUsuarios.length);
 
         // Residentes morosos
-        // Columna en BD: Estado (con mayúscula)
-        const estadoUsuario = (u: any) => u.Estado ?? u.estado;
-        const morosos = db.usuarios?.filter((u: any) => estadoUsuario(u) === 'Moroso').length || 0;
+        const morosos = listaUsuarios.filter((u: any) => u.Estado === 'Moroso').length;
         setTotalMorosos(morosos);
 
         // Residentes activos
-        const activos = db.usuarios?.filter((u: any) => estadoUsuario(u) === 'Activo').length || 0;
+        const activos = listaUsuarios.filter((u: any) => u.Estado === 'Activo').length;
         setTotalActivos(activos);
       } catch (err: any) {
         setError('Error al obtener estadísticas');
@@ -238,4 +231,4 @@ const AdminStatsPage = () => {
   );
 };
 
-export default AdminStatsPage; 
+export default AdminStatsPage;

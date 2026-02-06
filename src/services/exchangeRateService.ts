@@ -2,10 +2,8 @@
  * Servicio de tasa de cambio Venezuela.
  * - En tiempo real: fetchTasaEnTiempoReal() llama a una API pública (DolarApi) y devuelve la tasa actual.
  * - Persistida: el script actualizar-tasa-bcv.js guarda en BD; getTasaFromDB / getTasaParaCalculo leen de ahí.
- * - Modo Demo: devuelve tasa desde mockDatabase local.
  */
-import { supabase, isInDemoMode } from '../supabase/client';
-import { getMockDatabase } from '../supabase/mockSupabaseClient';
+import { supabase } from '../supabase/client';
 
 const TASA_CAMBIO_TABLE = 'tasa_cambio';
 
@@ -14,24 +12,10 @@ const DOLAR_API_OFICIAL = 'https://ve.dolarapi.com/v1/dolares/oficial';
 const DOLAR_API_ALT = 'https://dolarapi.com/v1/dolares/bolivar';
 
 /** Tasa fallback cuando la API y la BD no devuelven una válida (precio dólar actual aprox. en Bs). No se usa tasa 10 ni valores bajos. */
-const TASA_FALLBACK_BS_USD = 37.50;
+const TASA_FALLBACK_BS_USD = 370.25;
 
 /** Mínimo razonable para tasa Bs/USD; tasas menores (ej. 10) se ignoran y se usa TASA_FALLBACK_BS_USD. */
-const TASA_MINIMA_VALIDA = 20;
-
-/** Obtiene la tasa del mock database en modo demo */
-const getTasaFromMock = (): number => {
-  try {
-    const db = getMockDatabase();
-    const tasaRow = db.tasa_cambio?.[0];
-    if (tasaRow?.tasa && tasaRow.tasa >= TASA_MINIMA_VALIDA) {
-      return tasaRow.tasa;
-    }
-  } catch (e) {
-    console.warn('Error obteniendo tasa de mock:', e);
-  }
-  return TASA_FALLBACK_BS_USD;
-};
+const TASA_MINIMA_VALIDA = 100;
 
 export interface TasaCambioRow {
   id: number;
@@ -47,17 +31,6 @@ export interface TasaCambioRow {
  * La tasa se actualiza con el script actualizar-tasa-bcv.js desde la página oficial del BCV.
  */
 export const getTasaFromDB = async (): Promise<TasaCambioRow | null> => {
-  // En modo demo, retornar tasa del mock
-  if (isInDemoMode) {
-    const tasa = getTasaFromMock();
-    return {
-      id: 1,
-      tasa_bs_usd: tasa,
-      fecha_actualizacion: new Date().toISOString(),
-      fuente: 'Demo Mode'
-    };
-  }
-
   try {
     const { data, error } = await supabase
       .from(TASA_CAMBIO_TABLE)
